@@ -1,9 +1,15 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import basicSsl from '@vitejs/plugin-basic-ssl'
 import { VitePWA } from 'vite-plugin-pwa'
 
-export default defineConfig({
+// `npm run dev:https` (--mode https): self-signed HTTPS so phones on the LAN
+// get a secure context — required for real geolocation. Expect a one-time
+// certificate warning on the phone; the dev service worker won't register
+// over an untrusted cert (offline testing stays on localhost / preview).
+export default defineConfig(({ mode }) => ({
   plugins: [
+    ...(mode === 'https' ? [basicSsl()] : []),
     react(),
     VitePWA({
       // 'prompt': new builds surface a "tap to refresh" toast instead of the
@@ -36,5 +42,18 @@ export default defineConfig({
       devOptions: { enabled: true },
     }),
   ],
-  server: { host: true },
-})
+  server: {
+    host: true,
+    // Same-origin proxy to the local Supabase stack: a phone on the LAN
+    // can't reach the laptop's 127.0.0.1 (and an HTTPS page would block the
+    // plain-HTTP call as mixed content) — but it *can* call its own origin,
+    // which the dev server forwards here on the laptop. Paired with the
+    // loopback rewrite in src/lib/supabase.ts.
+    proxy: {
+      '/rest': 'http://127.0.0.1:54321',
+      '/auth': 'http://127.0.0.1:54321',
+      '/storage': 'http://127.0.0.1:54321',
+      '/realtime': { target: 'ws://127.0.0.1:54321', ws: true },
+    },
+  },
+}))

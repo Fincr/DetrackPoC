@@ -2,7 +2,7 @@ import exifr from 'exifr'
 import { useMemo, useRef, useState } from 'react'
 import { SignatureBox, type SignatureHandle } from '../components/SignatureBox'
 import { TopBar } from '../components/TopBar'
-import { useGeolocation } from '../hooks/useGeolocation'
+import { useGeolocation, type SimReason } from '../hooks/useGeolocation'
 import type { QueuedPod } from '../lib/db'
 import { fmtDistance, haversineM, parseEwkbPoint } from '../lib/geo'
 import { queuePod, type CapturedPhoto } from '../lib/pod'
@@ -11,6 +11,15 @@ import { syncNow } from '../lib/syncWorker'
 import type { Fix, Parcel, PodStatus } from '../lib/types'
 
 const FAILURE_PRESETS = ['No access', 'Refused', 'Address not found', 'Other…'] as const
+
+/** Driver-readable explanations for why the fix is simulated — actionable
+ *  where the driver can act (permission), honest where they can't. */
+const SIM_NOTES: Record<SimReason, string> = {
+  denied: 'Location permission is blocked — allow it for this site to record your real position.',
+  insecure: 'This connection is plain HTTP, so the browser blocks real GPS — open the app over HTTPS (npm run dev:https).',
+  timeout: 'GPS timed out — using the demo location for this capture.',
+  unavailable: 'No GPS fix available on this device — using the demo location.',
+}
 
 /** Capture screen (§6.2): the full §5 evidence bundle, one-handed. Photos are
  *  stamped + compressed on capture; GPS falls back to a simulated fix;
@@ -30,7 +39,7 @@ export function CaptureScreen({
   onComplete: (pod: QueuedPod, previewUrl: string) => void
   onBack: () => void
 }) {
-  const { fix, getFix } = useGeolocation()
+  const { fix, simReason, getFix } = useGeolocation()
   const [labelPhoto, setLabelPhoto] = useState<StampedPhoto | null>(null)
   const [wherePhoto, setWherePhoto] = useState<StampedPhoto | null>(null)
   const [capturedAt, setCapturedAt] = useState<Date | null>(null)
@@ -211,6 +220,14 @@ export function CaptureScreen({
             )
           })()}
         </div>
+
+        {/* Why the fix is simulated — a blocked permission shouldn't fail
+            silently when the whole point is proving where the driver stood */}
+        {(usedFix ?? fix)?.source === 'simulated' && simReason && (
+          <div className="mt-2 rounded-[11px] border border-gold/40 bg-gold/10 px-3 py-2 text-[12px] leading-[1.45] text-[#8a6d1a]">
+            {SIM_NOTES[simReason]}
+          </div>
+        )}
 
         <Field label="Received by">
           <input
