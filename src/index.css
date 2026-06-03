@@ -34,4 +34,11 @@
     height: 3px;
     background: linear-gradient(90deg, theme('colors.gold.DEFAULT'), transparent);
   }
+
+  /* JSON syntax colours (reference: keys gold, strings green, numbers orange,
+     booleans blue) — used by ColourJson */
+  .key { color: theme('colors.gold.soft'); }
+  .str { color: #86d6a8; }
+  .num { color: #e3a36b; }
+  .bool { color: #7fb0f0; }
 }
