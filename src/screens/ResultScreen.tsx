@@ -1,43 +1,60 @@
 import { ColourJson } from '../components/ColourJson'
-import type { CompletedPod } from '../lib/pod'
+import { useQueuedPod } from '../hooks/useSyncStatus'
+import type { QueuedPod } from '../lib/db'
+import { photoPath, signaturePath } from '../lib/pod'
 
-/** Confirmation (§7): green banner with tick disc, the captured photo, then
- *  the POD record in the dark navy JSON panel. */
+/** Confirmation (§7): green banner with tick disc, the stamped photo, then
+ *  the POD record in the dark navy JSON panel. Watches the local queue, so
+ *  the record visibly flips from "queued offline" to "synced" the moment the
+ *  sync worker gets it through. */
 export function ResultScreen({
-  result,
+  pod: initialPod,
   previewUrl,
   onReset,
 }: {
-  result: CompletedPod
+  pod: QueuedPod
   previewUrl: string
   onReset: () => void
 }) {
-  const { record, photoPaths } = result
-  const failed = record.status === 'failed'
-  const label = photoPaths.find((p) => p.type === 'label')
+  const pod = useQueuedPod(initialPod.podId) ?? initialPod
+  const failed = pod.status === 'failed'
+  const synced = pod.synced === 1
+  const label = pod.photos.find((p) => p.type === 'label')
 
-  // Confirmation JSON mirrors the reference record shape
+  const title = synced
+    ? failed
+      ? 'Failed delivery logged & synced'
+      : 'Captured & synced'
+    : failed
+      ? 'Failed delivery logged & queued'
+      : 'Captured & queued offline'
+  const sub = synced
+    ? `Uploaded — server trust stamp ${fmtTime(pod.syncedAt)}`
+    : 'Will upload automatically when signal returns'
+
+  // Mirrors the reference record shape; storage paths appear once they exist
   const display = {
-    pod_id: record.id,
-    parcel_id: record.parcel_id,
-    tracking: record.tracking_scanned,
-    status: record.status,
-    ...(failed ? { failure_reason: record.failure_reason } : {}),
-    received_by: record.received_by ?? (failed ? '—' : 'Signed for'),
-    captured_at: record.captured_at,
-    synced_at: record.synced_at,
-    location: result.location
-      ? { lat: result.location.lat, lng: result.location.lng, accuracy_m: result.location.accuracyM }
+    pod_id: pod.podId,
+    parcel_ref: pod.parcelRef,
+    tracking: pod.trackingScanned,
+    status: pod.status,
+    ...(failed ? { failure_reason: pod.failureReason } : {}),
+    received_by: pod.receivedBy ?? (failed ? '—' : 'Signed for'),
+    captured_at: pod.capturedAt,
+    synced_at: pod.syncedAt,
+    location: pod.location
+      ? { lat: pod.location.lat, lng: pod.location.lng, accuracy_m: pod.location.accuracyM }
       : null,
-    gps_simulated: record.gps_simulated,
-    signature: record.signature_path,
-    photos: photoPaths.map((p) => ({
+    gps_simulated: pod.location?.simulated ?? false,
+    signature: pod.signature ? (synced ? signaturePath(pod.podId) : 'queued') : null,
+    photos: pod.photos.map((p) => ({
       type: p.type,
-      stored: p.path,
+      stored: synced ? photoPath(pod.podId, p.type) : 'pending-upload',
       orig_kb: p.origKb,
       compressed_kb: p.compressedKb,
     })),
-    driver_id: record.driver_id,
+    driver_id: 'drv_demo',
+    device_queued: !synced,
   }
 
   return (
@@ -49,12 +66,8 @@ export function ResultScreen({
           </svg>
         </span>
         <div>
-          <div className="text-[13.5px] font-bold text-[#1d6840]">
-            {failed ? 'Failed delivery logged & synced' : 'Captured & synced'}
-          </div>
-          <div className="mt-px text-xs text-[#3f7a59]">
-            Uploaded to dispatch — server set the synced_at trust stamp
-          </div>
+          <div className="text-[13.5px] font-bold text-[#1d6840]">{title}</div>
+          <div className="mt-px text-xs text-[#3f7a59]">{sub}</div>
         </div>
       </div>
 
@@ -71,7 +84,10 @@ export function ResultScreen({
         )}
       </div>
 
-      <ColourJson header="POD record · synced to Supabase" value={display} />
+      <ColourJson
+        header={synced ? 'POD record · synced to Supabase' : 'POD record · saved to device'}
+        value={display}
+      />
 
       <button
         type="button"
@@ -82,4 +98,13 @@ export function ResultScreen({
       </button>
     </div>
   )
+}
+
+function fmtTime(iso: string | null): string {
+  if (!iso) return ''
+  return new Date(iso).toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
 }

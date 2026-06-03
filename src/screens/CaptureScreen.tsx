@@ -2,16 +2,18 @@ import { useRef, useState } from 'react'
 import { SignatureBox, type SignatureHandle } from '../components/SignatureBox'
 import { TopBar } from '../components/TopBar'
 import { useGeolocation } from '../hooks/useGeolocation'
-import { completePodOnline, type CapturedPhoto, type CompletedPod } from '../lib/pod'
+import type { QueuedPod } from '../lib/db'
+import { queuePod, type CapturedPhoto } from '../lib/pod'
 import { stampAndCompress, type Fix, type StampedPhoto } from '../lib/stamp'
+import { syncNow } from '../lib/syncWorker'
 import type { Parcel, PodStatus } from '../lib/types'
 
 const FAILURE_PRESETS = ['No access', 'Refused', 'Address not found', 'Other…'] as const
 
 /** Capture screen (§6.2): the full §5 evidence bundle, one-handed. Photos are
  *  stamped + compressed on capture; GPS falls back to a simulated fix;
- *  signature is optional. Still writes straight to Supabase — the offline
- *  queue replaces that path in Checkpoint 6. */
+ *  signature is optional. Completion writes to the local queue (§8) and
+ *  returns instantly — the sync worker uploads in the background. */
 export function CaptureScreen({
   parcel,
   trackingScanned,
@@ -24,7 +26,7 @@ export function CaptureScreen({
   trackingScanned: string
   stopIndex: number
   stopCount: number
-  onComplete: (result: CompletedPod, previewUrl: string) => void
+  onComplete: (pod: QueuedPod, previewUrl: string) => void
   onBack: () => void
 }) {
   const { fix, getFix } = useGeolocation()
@@ -79,7 +81,9 @@ export function CaptureScreen({
     try {
       const gpsFix = usedFixRef.current ?? (await getFix())
       const signature = (await sigRef.current?.getBlob()) ?? null
-      const result = await completePodOnline({
+      // Local-first (§8): this is an IndexedDB write — instant, works with
+      // zero signal. The driver sees "queued" immediately.
+      const pod = await queuePod({
         parcel,
         trackingScanned,
         status: outcome,
@@ -90,7 +94,8 @@ export function CaptureScreen({
         location: { lat: gpsFix.lat, lng: gpsFix.lng, accuracyM: gpsFix.accuracyM, simulated: gpsFix.simulated },
         signature,
       })
-      onComplete(result, labelPhoto.url)
+      void syncNow() // fire-and-forget — drains now if we happen to be online
+      onComplete(pod, labelPhoto.url)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
       setSubmitting(false)
@@ -202,7 +207,7 @@ export function CaptureScreen({
 
         {error && (
           <div className="mt-3.5 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">
-            {error}. Check the connection — offline capture arrives in Checkpoint 6.
+            {error}
           </div>
         )}
 

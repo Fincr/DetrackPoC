@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { PhoneFrame } from './components/PhoneFrame'
+import { SyncBadge } from './components/SyncBadge'
 import { useParcels } from './hooks/useParcels'
-import type { CompletedPod } from './lib/pod'
+import type { QueuedPod } from './lib/db'
+import { subscribeSync } from './lib/syncEvents'
 import type { Parcel } from './lib/types'
 import { CaptureScreen } from './screens/CaptureScreen'
 import { ResultScreen } from './screens/ResultScreen'
@@ -11,14 +13,20 @@ import { StopsScreen } from './screens/StopsScreen'
 type View =
   | { name: 'stops' }
   | { name: 'capture'; parcel: Parcel; scannedValue: string }
-  | { name: 'done'; result: CompletedPod; previewUrl: string }
+  | { name: 'done'; pod: QueuedPod; previewUrl: string }
 
 export default function App() {
   const { parcels, error, reload } = useParcels()
   const [view, setView] = useState<View>({ name: 'stops' })
 
+  // Stop statuses change server-side as the sync worker drains the queue —
+  // refresh the list whenever the queue moves (no-op when offline).
+  useEffect(() => subscribeSync(() => void reload()), [reload])
+
   return (
     <PhoneFrame>
+      <SyncBadge />
+
       {view.name === 'stops' && (
         <StopsScreen
           parcels={parcels}
@@ -36,16 +44,13 @@ export default function App() {
           stopIndex={(parcels?.findIndex((p) => p.id === view.parcel.id) ?? 0) + 1}
           stopCount={parcels?.length ?? 0}
           onBack={() => setView({ name: 'stops' })}
-          onComplete={(result, previewUrl) => {
-            void reload() // refresh stop statuses behind the confirmation
-            setView({ name: 'done', result, previewUrl })
-          }}
+          onComplete={(pod, previewUrl) => setView({ name: 'done', pod, previewUrl })}
         />
       )}
 
       {view.name === 'done' && (
         <ResultScreen
-          result={view.result}
+          pod={view.pod}
           previewUrl={view.previewUrl}
           onReset={() => setView({ name: 'stops' })}
         />

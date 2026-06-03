@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import type { Parcel } from '../lib/types'
 
@@ -7,17 +7,22 @@ import type { Parcel } from '../lib/types'
 export function useParcels() {
   const [parcels, setParcels] = useState<Parcel[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const hasData = useRef(false)
 
   const reload = useCallback(async () => {
     const { data, error } = await supabase
       .from('parcels')
       .select('*')
       .order('tracking_number')
-    if (error) setError(error.message)
-    else {
-      setParcels(data as Parcel[])
-      setError(null)
+    if (error) {
+      // Offline-friendly: keep showing stale stops if we already have data —
+      // the local queue, not this list, is the truth for what was captured
+      if (!hasData.current) setError(error.message)
+      return
     }
+    hasData.current = true
+    setParcels(data as Parcel[])
+    setError(null)
   }, [])
 
   useEffect(() => {

@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { BarcodeScanner } from '../components/BarcodeScanner'
 import { TopBar } from '../components/TopBar'
+import { useSyncStatus } from '../hooks/useSyncStatus'
 import type { Parcel } from '../lib/types'
 
 const STATUS_STYLES: Record<Parcel['status'], string> = {
@@ -20,6 +21,9 @@ export function StopsScreen({
   onSelect: (parcel: Parcel, scannedValue?: string) => void
 }) {
   const [sheetOpen, setSheetOpen] = useState(false)
+  // Offline, the server still says "pending" — overlay the local queue so a
+  // captured stop reads as done the moment the driver completes it
+  const { queuedParcels } = useSyncStatus()
 
   const today = new Date().toLocaleDateString('en-GB', {
     weekday: 'long',
@@ -61,7 +65,9 @@ export function StopsScreen({
           <div className="px-[18px] py-6 text-center text-[13px] text-muted">Loading stops…</div>
         )}
 
-        {parcels?.map((p, i) => (
+        {parcels?.map((p, i) => {
+          const queuedStatus = queuedParcels.get(p.id)
+          return (
           <button
             key={p.id}
             type="button"
@@ -70,9 +76,16 @@ export function StopsScreen({
           >
             <div className="flex items-baseline justify-between gap-3">
               <div className="text-[15px] font-semibold">{p.recipient_name}</div>
-              <div className={`text-[11px] font-bold uppercase tracking-[0.6px] ${STATUS_STYLES[p.status]}`}>
-                {p.status === 'pending' ? `Stop ${i + 1}` : p.status}
-              </div>
+              {queuedStatus ? (
+                <div className="text-[11px] font-bold uppercase tracking-[0.6px]">
+                  <span className={STATUS_STYLES[queuedStatus]}>{queuedStatus}</span>
+                  <span className="text-gold"> · queued</span>
+                </div>
+              ) : (
+                <div className={`text-[11px] font-bold uppercase tracking-[0.6px] ${STATUS_STYLES[p.status]}`}>
+                  {p.status === 'pending' ? `Stop ${i + 1}` : p.status}
+                </div>
+              )}
             </div>
             <div className="mt-0.5 text-[13px] leading-[1.45] text-muted">
               {p.address_line}
@@ -87,7 +100,8 @@ export function StopsScreen({
               </span>
             </div>
           </button>
-        ))}
+          )
+        })}
       </div>
 
       {sheetOpen && parcels && (
