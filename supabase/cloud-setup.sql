@@ -1,8 +1,8 @@
 -- ePOD PoC: one-shot cloud setup (migration + seed combined).
 -- Paste this whole file into the Supabase dashboard SQL Editor and Run.
 
--- ePOD PoC schema (Â§4 of the brief).
--- PoC posture: RLS is left DISABLED on these tables and the bucket is public â€”
+-- ePOD PoC schema (§4 of the brief).
+-- PoC posture: RLS is left DISABLED on these tables and the bucket is public —
 -- there is no real auth (hardcoded demo driver). Do not ship this to prod.
 
 create extension if not exists postgis;
@@ -108,7 +108,7 @@ insert into parcels (tracking_number, recipient_name, address_line, postcode, de
   ('CP-200005-GB', 'Atlantique Wines (UK)',     '8 Harbour View, Cardiff Bay, Cardiff',         'CF10 5BZ',
    st_setsrid(st_makepoint(-3.16400, 51.46400), 4326)::geography, 'International'),
 
-  ('CP-300006-GB', 'Acme Home Goods â€” J. Mercer', '3 Foundry Lane, Holbeck, Leeds',             'LS11 9XE',
+  ('CP-300006-GB', 'Acme Home Goods — J. Mercer', '3 Foundry Lane, Holbeck, Leeds',             'LS11 9XE',
    st_setsrid(st_makepoint(-1.55800, 53.78900), 4326)::geography, 'Fulfilment'),
 
   ('CP-300007-GB', 'Tillys Toy Shop',           '27 St Giles Street, Norwich',                  'NR2 1JN',

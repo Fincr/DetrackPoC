@@ -196,9 +196,13 @@ function ScanSheet({
   }
 
   return (
-    <div className="absolute inset-0 z-10 flex flex-col justify-end bg-navy/50" onClick={onClose}>
+    <div className="absolute inset-0 z-10 flex flex-col bg-navy/50" onClick={onClose}>
+      {/* Small backdrop sliver so it still reads as a sheet (tap to close);
+          the sheet itself fills the rest so the camera sits at the TOP of
+          the screen — visible while aiming, clear of mobile browser bars */}
+      <div className="h-12 flex-none" />
       <div
-        className="max-h-full overflow-y-auto rounded-t-[22px] bg-paper p-[18px] pb-6"
+        className="flex-1 overflow-y-auto rounded-t-[22px] bg-paper p-[18px] pb-[max(24px,env(safe-area-inset-bottom))]"
         onClick={(e) => e.stopPropagation()}
       >
         <p className="section-label mb-2">Scan the label</p>
