@@ -41,4 +41,13 @@
   .str { color: #86d6a8; }
   .num { color: #e3a36b; }
   .bool { color: #7fb0f0; }
+
+  /* Viewfinder scan line drift (BarcodeScanner) */
+  .scanline {
+    animation: scan 2.2s ease-in-out infinite alternate;
+  }
+  @keyframes scan {
+    from { top: 6%; }
+    to { top: 94%; }
+  }
 }

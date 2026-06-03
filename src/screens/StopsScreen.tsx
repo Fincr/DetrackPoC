@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { BarcodeScanner } from '../components/BarcodeScanner'
 import { TopBar } from '../components/TopBar'
 import type { Parcel } from '../lib/types'
 
@@ -103,8 +104,10 @@ export function StopsScreen({
   )
 }
 
-/** Tracking-number entry sheet. Checkpoint 3 = type-in (the permanent manual
- *  fallback); Checkpoint 5 adds the camera scanner on top. */
+/** Scan sheet (§5): the camera scanner is the primary path into a capture —
+ *  a decoded barcode auto-selects the matching parcel. Type-in stays as the
+ *  manual fallback, and unknown values surface clearly instead of failing
+ *  silently. */
 function ScanSheet({
   parcels,
   onClose,
@@ -116,44 +119,54 @@ function ScanSheet({
 }) {
   const [value, setValue] = useState('')
   const [unknown, setUnknown] = useState<string | null>(null)
+  // The scanner re-fires the same frame several times a second — throttle
+  // repeated unknown values so the banner doesn't flicker
+  const lastUnknownRef = useRef({ v: '', t: 0 })
 
-  function submit() {
-    const needle = value.trim().toUpperCase()
+  function tryMatch(raw: string, source: 'scan' | 'type') {
+    const needle = raw.trim().toUpperCase()
     if (!needle) return
     const parcel = parcels.find((p) => p.tracking_number.toUpperCase() === needle)
-    // Unknown parcels must surface clearly, not fail silently (§5)
-    if (parcel) onMatch(parcel, needle)
-    else setUnknown(needle)
+    if (parcel) {
+      navigator.vibrate?.(80) // tactile "got it" on supporting devices
+      onMatch(parcel, needle)
+      return
+    }
+    if (source === 'scan') {
+      const now = Date.now()
+      if (lastUnknownRef.current.v === needle && now - lastUnknownRef.current.t < 2500) return
+      lastUnknownRef.current = { v: needle, t: now }
+    }
+    setUnknown(needle)
   }
 
   return (
     <div className="absolute inset-0 z-10 flex flex-col justify-end bg-navy/50" onClick={onClose}>
       <div
-        className="rounded-t-[22px] bg-paper p-[18px] pb-6"
+        className="max-h-full overflow-y-auto rounded-t-[22px] bg-paper p-[18px] pb-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <p className="section-label mb-2">Enter tracking number</p>
-        <p className="mb-3 text-[12px] leading-[1.5] text-muted">
-          Camera scanning arrives in Checkpoint 5 — type the barcode value for
-          now (they're listed in the README).
-        </p>
-        <input
-          autoFocus
-          value={value}
-          onChange={(e) => {
-            setValue(e.target.value)
-            setUnknown(null)
-          }}
-          onKeyDown={(e) => e.key === 'Enter' && submit()}
-          placeholder="CP-849213-GB"
-          className="w-full rounded-[11px] border border-line bg-white px-3 py-[11px] font-mono text-sm uppercase tracking-[1px] text-ink focus:border-navy-500 focus:outline-none focus:ring-[3px] focus:ring-navy-500/10"
-        />
+        <p className="section-label mb-2">Scan the label</p>
+        <BarcodeScanner onDecode={(v) => tryMatch(v, 'scan')} />
+
         {unknown && (
           <div className="mt-2.5 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">
             <span className="font-bold">Unknown parcel.</span> No stop matches{' '}
             <span className="font-mono">{unknown}</span> — check the label or pick from the list.
           </div>
         )}
+
+        <p className="section-label mb-2 mt-4">Or type the tracking number</p>
+        <input
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value)
+            setUnknown(null)
+          }}
+          onKeyDown={(e) => e.key === 'Enter' && tryMatch(value, 'type')}
+          placeholder="CP-849213-GB"
+          className="w-full rounded-[11px] border border-line bg-white px-3 py-[11px] font-mono text-sm uppercase tracking-[1px] text-ink focus:border-navy-500 focus:outline-none focus:ring-[3px] focus:ring-navy-500/10"
+        />
         <div className="mt-3 flex gap-2">
           <button
             type="button"
@@ -164,7 +177,7 @@ function ScanSheet({
           </button>
           <button
             type="button"
-            onClick={submit}
+            onClick={() => tryMatch(value, 'type')}
             className="flex-1 rounded-[11px] bg-navy p-[11px] font-serif text-[15px] text-white"
           >
             Find parcel
