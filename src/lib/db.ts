@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from 'dexie'
-import type { Fix, PhotoType, PodStatus } from './types'
+import type { Fix, Parcel, PhotoType, PodStatus } from './types'
 
 /** A capture as it sits in the local queue (§8): photo/signature blobs and
  *  all metadata land here FIRST — nothing blocks on the network. Synced items
@@ -28,9 +28,17 @@ export interface QueuedPod {
 
 export const db = new Dexie('epod') as Dexie & {
   pods: EntityTable<QueuedPod, 'podId'>
+  /** Read-through cache of the server stop list, so a cold start with no
+   *  signal still shows the run sheet. The server stays the source of
+   *  truth — every successful fetch replaces the cache. */
+  parcels: EntityTable<Parcel, 'id'>
 }
 
 db.version(1).stores({
   // Only fields we query on need indexing; blobs ride along unindexed
   pods: 'podId, synced, queuedAt',
+})
+db.version(2).stores({
+  pods: 'podId, synced, queuedAt',
+  parcels: 'id',
 })

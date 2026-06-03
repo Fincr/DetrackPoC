@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { db, type QueuedPod } from '../lib/db'
 import { subscribeSync } from '../lib/syncEvents'
-import { isSyncing } from '../lib/syncWorker'
+import { isSyncing, MAX_AUTO_ATTEMPTS } from '../lib/syncWorker'
 import type { PodStatus } from '../lib/types'
 
 export interface SyncStatus {
   queued: number
+  /** Items that exhausted their automatic retries — need a manual retry */
+  stuck: number
   synced: number
   online: boolean
   syncing: boolean
@@ -18,6 +20,7 @@ export interface SyncStatus {
 export function useSyncStatus(): SyncStatus {
   const [status, setStatus] = useState<SyncStatus>({
     queued: 0,
+    stuck: 0,
     synced: 0,
     online: navigator.onLine,
     syncing: false,
@@ -34,8 +37,10 @@ export function useSyncStatus(): SyncStatus {
       if (!live) return
       const queuedParcels = new Map<string, PodStatus>()
       for (const pod of unsynced) if (pod.parcelId) queuedParcels.set(pod.parcelId, pod.status)
+      const stuck = unsynced.filter((p) => p.attempts >= MAX_AUTO_ATTEMPTS).length
       setStatus({
-        queued: unsynced.length,
+        queued: unsynced.length - stuck,
+        stuck,
         synced,
         online: navigator.onLine,
         syncing: isSyncing(),
