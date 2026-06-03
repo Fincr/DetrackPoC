@@ -40,12 +40,7 @@ export function ResultScreen({
     ? `Synced to dispatch at ${fmtTime(pod.syncedAt)}`
     : 'Will upload automatically when signal returns'
 
-  const gpsNote =
-    pod.location?.source === 'photo_exif'
-      ? ' · from photo'
-      : pod.location?.source === 'simulated'
-        ? ' · simulated'
-        : ''
+  const gpsNote = pod.location?.source === 'photo_exif' ? ' · from photo' : ''
 
   return (
     <div className="px-[18px] pb-[22px] pt-4">
@@ -109,7 +104,7 @@ export function ResultScreen({
               {pod.location.accuracyM != null ? ` ±${pod.location.accuracyM}m` : ''}
             </a>
           ) : (
-            '—'
+            <span className="text-fail">Not recorded</span>
           )}
         </Row>
         <Row k="From address">
@@ -189,7 +184,7 @@ function buildTechRecord(pod: QueuedPod, synced: boolean) {
     location: pod.location
       ? { lat: pod.location.lat, lng: pod.location.lng, accuracy_m: pod.location.accuracyM }
       : null,
-    gps_source: pod.location?.source ?? 'device',
+    gps_source: pod.location?.source ?? null,
     dest_distance_m: pod.destDistanceM,
     signature: pod.signature ? (synced ? signaturePath(pod.podId) : 'queued') : null,
     photos: pod.photos.map((p) => ({

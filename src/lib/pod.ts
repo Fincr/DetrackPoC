@@ -102,8 +102,8 @@ export async function uploadPod(pod: QueuedPod): Promise<string | null> {
         captured_at: pod.capturedAt,
         location: pod.location ? `POINT(${pod.location.lng} ${pod.location.lat})` : null,
         gps_accuracy_m: pod.location?.accuracyM ?? null,
-        gps_simulated: pod.location?.source === 'simulated',
-        gps_source: pod.location?.source ?? 'device',
+        gps_simulated: false, // legacy column — captures are real-GPS-only now
+        gps_source: pod.location?.source ?? null, // null = no fix at capture
         dest_distance_m: pod.destDistanceM,
         signature_path: pod.signature ? signaturePath(pod.podId) : null,
         driver_id: 'drv_demo',

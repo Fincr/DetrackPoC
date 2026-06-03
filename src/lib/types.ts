@@ -9,16 +9,18 @@ export type PhotoType = 'label' | 'where_left'
  *  after this many failures. */
 export const MAX_DELIVERY_ATTEMPTS = 3
 
-/** Where a POD's fix came from, most → least trustworthy */
+/** Where a POD's fix came from, most → least trustworthy. 'simulated' is
+ *  legacy — old rows may carry it, but captures no longer produce one:
+ *  the record gets a real fix or none at all. */
 export type GpsSource = 'photo_exif' | 'device' | 'simulated'
 
-/** A resolved GPS fix. accuracyM is null for EXIF fixes (cameras don't
- *  record accuracy). */
+/** A resolved GPS fix — always a real reading (EXIF or live device).
+ *  accuracyM is null for EXIF fixes (cameras don't record accuracy). */
 export interface Fix {
   lat: number
   lng: number
   accuracyM: number | null
-  source: GpsSource
+  source: 'photo_exif' | 'device'
 }
 
 export interface Parcel {
@@ -56,7 +58,8 @@ export interface PodRecord {
   location: GeoPoint | string | null
   gps_accuracy_m: number | null
   gps_simulated: boolean
-  gps_source: GpsSource
+  /** null = capture had no fix (real-GPS-only model) */
+  gps_source: GpsSource | null
   /** Metres between the capture fix and the parcel's destination (geofence) */
   dest_distance_m: number | null
   signature_path: string | null

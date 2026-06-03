@@ -2,7 +2,7 @@ import exifr from 'exifr'
 import { useMemo, useRef, useState } from 'react'
 import { SignatureBox, type SignatureHandle } from '../components/SignatureBox'
 import { TopBar } from '../components/TopBar'
-import { useGeolocation, type SimReason } from '../hooks/useGeolocation'
+import { useGeolocation, type NoFixReason } from '../hooks/useGeolocation'
 import type { QueuedPod } from '../lib/db'
 import { fmtDistance, haversineM, parseEwkbPoint } from '../lib/geo'
 import { queuePod, type CapturedPhoto } from '../lib/pod'
@@ -12,19 +12,24 @@ import type { Fix, Parcel, PodStatus } from '../lib/types'
 
 const FAILURE_PRESETS = ['No access', 'Refused', 'Address not found', 'Other…'] as const
 
-/** Driver-readable explanations for why the fix is simulated — actionable
- *  where the driver can act (permission), honest where they can't. */
-const SIM_NOTES: Record<SimReason, string> = {
-  denied: 'Location permission is blocked — allow it for this site to record your real position.',
-  insecure: 'This connection is plain HTTP, so the browser blocks real GPS — open the app over HTTPS (npm run dev:https).',
-  timeout: 'GPS timed out — using the demo location for this capture.',
-  unavailable: 'No GPS fix available on this device — using the demo location.',
+/** Driver-readable explanations for a missing fix — actionable where the
+ *  driver can act (permission, location services), honest where they can't.
+ *  There is no simulated fallback: a capture without GPS records none. */
+const NO_FIX_NOTES: Record<NoFixReason, string> = {
+  denied:
+    'Location is blocked for this site — allow it via the padlock icon, then retry. (Chrome blocks it silently on self-signed HTTPS dev URLs — use a trusted address.)',
+  insecure:
+    'Real GPS needs a secure connection — open the app over HTTPS (npm run dev:https on the LAN).',
+  timeout: 'Could not get a GPS fix in time — retry, ideally with a clearer view of the sky.',
+  unavailable:
+    'The device returned no GPS fix — check location services are switched on, then retry.',
 }
 
 /** Capture screen (§6.2): the full §5 evidence bundle, one-handed. Photos are
- *  stamped + compressed on capture; GPS falls back to a simulated fix;
- *  signature is optional. Completion writes to the local queue (§8) and
- *  returns instantly — the sync worker uploads in the background. */
+ *  stamped + compressed on capture; GPS is real-or-nothing (no simulated
+ *  fix — a capture without one records none and says so); signature is
+ *  optional. Completion writes to the local queue (§8) and returns
+ *  instantly — the sync worker uploads in the background. */
 export function CaptureScreen({
   parcel,
   trackingScanned,
@@ -39,7 +44,7 @@ export function CaptureScreen({
   onComplete: (pod: QueuedPod, previewUrl: string) => void
   onBack: () => void
 }) {
-  const { fix, simReason, getFix } = useGeolocation()
+  const { fix, noFixReason, acquiring, getFix, retry } = useGeolocation()
   const [labelPhoto, setLabelPhoto] = useState<StampedPhoto | null>(null)
   const [wherePhoto, setWherePhoto] = useState<StampedPhoto | null>(null)
   const [capturedAt, setCapturedAt] = useState<Date | null>(null)
@@ -50,8 +55,10 @@ export function CaptureScreen({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const sigRef = useRef<SignatureHandle>(null)
-  // The fix actually burned into the label photo — the record must match the image
-  const [usedFix, setUsedFix] = useState<Fix | null>(null)
+  // The fix actually burned into the label photo — the record must match the
+  // image. undefined = no label photo yet (chip tracks the live fix);
+  // null = photo was taken with NO fix, so the record stays fix-less too.
+  const [usedFix, setUsedFix] = useState<Fix | null | undefined>(undefined)
   const barRef = useRef<HTMLSpanElement>(null)
   // Geofence: where this parcel *should* be delivered (EWKB from PostgREST)
   const destination = useMemo(() => parseEwkbPoint(parcel.destination), [parcel.destination])
@@ -60,11 +67,11 @@ export function CaptureScreen({
     try {
       const takenAt = new Date() // evidence time = device clock at the shutter (§5)
       // GPS provenance ladder: prefer the fix the camera embedded in the
-      // photo itself (EXIF), then live device GPS, then the simulated demo
-      // fix. Browsers often strip EXIF location for privacy, so the fallback
-      // path is the common one.
+      // photo itself (EXIF), then a fresh live device fix at the shutter.
+      // Browsers often strip EXIF location for privacy, so the device path
+      // is the common one. No fix at all → null, never a fabricated point.
       const exif = await exifr.gps(file).catch(() => undefined)
-      const gpsFix: Fix =
+      const gpsFix: Fix | null =
         exif && Number.isFinite(exif.latitude) && Number.isFinite(exif.longitude)
           ? {
               lat: +exif.latitude.toFixed(5),
@@ -104,7 +111,9 @@ export function CaptureScreen({
     }
 
     try {
-      const gpsFix = usedFix ?? (await getFix())
+      // undefined = label photo somehow never set it — take a live reading.
+      // null = the photo was stamped without a fix; the record honours that.
+      const gpsFix = usedFix !== undefined ? usedFix : await getFix()
       const signature = (await sigRef.current?.getBlob()) ?? null
       // Local-first (§8): this is an IndexedDB write — instant, works with
       // zero signal. The driver sees "queued" immediately.
@@ -117,7 +126,7 @@ export function CaptureScreen({
         capturedAt,
         photos,
         location: gpsFix,
-        destDistanceM: destination ? Math.round(haversineM(gpsFix, destination)) : null,
+        destDistanceM: destination && gpsFix ? Math.round(haversineM(gpsFix, destination)) : null,
         signature,
       })
       void syncNow() // fire-and-forget — drains now if we happen to be online
@@ -153,7 +162,10 @@ export function CaptureScreen({
           prompt="Tap to photograph the label"
           sub="Timestamp + GPS are burned into the image"
           onPhoto={(f) => void takePhoto(f, 'label')}
-          onRetake={() => setLabelPhoto(null)}
+          onRetake={() => {
+            setLabelPhoto(null)
+            setUsedFix(undefined) // chip tracks the live fix again until re-shot
+          }}
         />
 
         <div className="mt-3">
@@ -173,30 +185,34 @@ export function CaptureScreen({
             v={capturedAt?.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) ?? '—'}
             pending={!capturedAt}
           />
-          {/* Shows the fix that will go on the record: the photo's EXIF fix
-              once a photo is taken, otherwise the live device fix. Gold +
-              "(simulated)" when it's the fallback (§7). */}
+          {/* Shows the fix that will go on the record: the fix burned into
+              the label photo once one is taken, otherwise the live device
+              fix. Real-or-nothing — "no fix" renders red, never a
+              fabricated point. */}
           {(() => {
-            const shown = usedFix ?? fix
-            const k =
-              shown?.source === 'photo_exif'
-                ? 'GPS location (from photo)'
-                : shown?.source === 'simulated'
-                  ? 'GPS location (simulated)'
-                  : 'GPS location'
+            const shown = usedFix !== undefined ? usedFix : fix
+            const pending = usedFix === undefined && acquiring
             return (
               <Chip
-                k={k}
-                v={shown ? `${shown.lat.toFixed(5)}, ${shown.lng.toFixed(5)}` : 'acquiring…'}
-                pending={!shown}
-                sim={shown?.source === 'simulated'}
+                k={shown?.source === 'photo_exif' ? 'GPS location (from photo)' : 'GPS location'}
+                v={
+                  shown
+                    ? `${shown.lat.toFixed(5)}, ${shown.lng.toFixed(5)}`
+                    : pending
+                      ? 'acquiring…'
+                      : usedFix === null
+                        ? 'not recorded'
+                        : 'no fix'
+                }
+                pending={pending}
+                fail={!shown && !pending}
               />
             )
           })()}
           {/* Geofence chip: how far the current fix is from where the parcel
               should be going — green near, gold/red the further off it is */}
           {(() => {
-            const shown = usedFix ?? fix
+            const shown = usedFix !== undefined ? usedFix : fix
             const dist = shown && destination ? haversineM(shown, destination) : null
             return (
               <div className="col-span-2 rounded-[11px] border border-line bg-white px-[11px] py-[9px]">
@@ -221,11 +237,14 @@ export function CaptureScreen({
           })()}
         </div>
 
-        {/* Why the fix is simulated — a blocked permission shouldn't fail
-            silently when the whole point is proving where the driver stood */}
-        {(usedFix ?? fix)?.source === 'simulated' && simReason && (
-          <div className="mt-2 rounded-[11px] border border-gold/40 bg-gold/10 px-3 py-2 text-[12px] leading-[1.45] text-[#8a6d1a]">
-            {SIM_NOTES[simReason]}
+        {/* Why there's no fix — a blocked permission shouldn't fail silently
+            when the whole point is proving where the driver stood */}
+        {(usedFix !== undefined ? usedFix : fix) == null && noFixReason && (
+          <div className="mt-2 flex items-start justify-between gap-3 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2 text-[12px] leading-[1.45] text-fail">
+            <span>{NO_FIX_NOTES[noFixReason]}</span>
+            <button type="button" onClick={retry} className="flex-none font-semibold underline">
+              Retry
+            </button>
           </div>
         )}
 
@@ -370,13 +389,13 @@ function PhotoZone({
   )
 }
 
-function Chip({ k, v, pending = false, sim = false }: { k: string; v: string; pending?: boolean; sim?: boolean }) {
+function Chip({ k, v, pending = false, fail = false }: { k: string; v: string; pending?: boolean; fail?: boolean }) {
   return (
     <div className="rounded-[11px] border border-line bg-white px-[11px] py-[9px]">
       <div className="text-[10px] font-bold uppercase tracking-[0.6px] text-muted">{k}</div>
       <div
         className={`mt-[3px] text-[13px] tabular-nums ${
-          pending ? 'font-medium text-muted' : sim ? 'font-semibold text-gold' : 'font-semibold'
+          pending ? 'font-medium text-muted' : fail ? 'font-semibold text-fail' : 'font-semibold'
         }`}
       >
         {v}

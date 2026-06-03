@@ -10,7 +10,7 @@ acceptance-test walkthrough is `DEMO.md`.
 - **PoC, not production.** Convincing runnable demo > completeness. No real
   auth (hardcoded `drv_demo`), no multi-tenancy, RLS off, public bucket.
 - Keep logic commented where non-obvious: overlay maths (`stamp.ts`), sync
-  idempotency (`pod.ts`/`syncWorker.ts`), GPS fallback (`useGeolocation.ts`),
+  idempotency (`pod.ts`/`syncWorker.ts`), GPS acquisition (`useGeolocation.ts`),
   EWKB parsing (`geo.ts`).
 - Windows dev machine. The Supabase CLI is a devDependency; in sandboxed
   shells `npx supabase` can fail with EPERM — call the binary directly:
@@ -61,11 +61,19 @@ Routing:  main.tsx hash router — #/dispatch = DispatcherScreen, else driver Ap
 - **Trust boundary:** `captured_at` = device clock at the shutter;
   `synced_at` = DB column default `now()` at first insert (never sent by the
   client, never overwritten on conflict-update).
-- **GPS provenance ladder** (`gps_source`): photo EXIF (exifr) → live device
-  fix (acquired on capture-screen mount) → Erith fallback `51.484, 0.177
-  ±35m` ('simulated'). EXIF fixes have `gps_accuracy_m = null`. The fix
-  burned into the photo is the fix stored on the record. Browsers often
-  strip EXIF GPS, so 'device' is the common case.
+- **GPS is real-or-nothing** (`gps_source`): photo EXIF (exifr) → live
+  device fix (warm-up on capture-screen mount, *fresh* read at the
+  shutter) → none (`location`/`gps_source` null, red "no fix" chip with the
+  reason + Retry). There is NO simulated fallback (removed 2026-06-03 at
+  the user's request, diverging from the brief); `gps_simulated` and the
+  'simulated' enum value linger only for legacy rows. EXIF fixes have
+  `gps_accuracy_m = null`. The fix burned into the photo is the fix stored
+  on the record (tri-state `usedFix` in CaptureScreen). Browsers often
+  strip EXIF GPS, so 'device' is the common case. Real GPS needs a secure
+  context: `npm run dev:https` for LAN phones — but Chrome auto-denies
+  geolocation on self-signed certs, so phone GPS demos want a trusted
+  origin (deploy) or the phone-side `unsafely-treat-insecure-origin-as-
+  secure` flag.
 - **Geography columns** come back from PostgREST as EWKB hex — parse with
   `geo.ts` (offsets verified by `scripts/test-ewkb.mjs`).
 
@@ -95,9 +103,9 @@ Routing:  main.tsx hash router — #/dispatch = DispatcherScreen, else driver Ap
 - Responsive shell (`AppShell`): edge-to-edge on mobile (min-h-dvh,
   safe-area-aware top bar/badge/footer), centred ~430px elevated column on
   the navy gradient for laptop. No mockup chrome — this is the product UI.
-  Gold-to-transparent `gold-underline` on top bars. GPS chip gold +
-  "(simulated)" on fallback. JSON panel: keys gold, strings green, numbers
-  orange, booleans blue.
+  Gold-to-transparent `gold-underline` on top bars. GPS chip red "no fix" +
+  reason note with Retry when no real fix exists. JSON panel: keys gold,
+  strings green, numbers orange, booleans blue.
 
 ## Commands
 

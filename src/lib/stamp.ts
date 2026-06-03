@@ -18,7 +18,7 @@ export async function stampAndCompress(
   file: File,
   parcelRef: string,
   takenAt: Date,
-  fix: Fix,
+  fix: Fix | null,
 ): Promise<StampedPhoto> {
   const image = await decode(file)
 
@@ -51,10 +51,11 @@ export async function stampAndCompress(
   const pad = Math.round(w * 0.035)
   const big = Math.max(13, Math.round(w * 0.032))
   const sml = Math.max(11, Math.round(w * 0.024))
-  // Provenance marker: (photo) = EXIF from the camera, (sim) = demo fallback
-  const srcMark = fix.source === 'photo_exif' ? '  (photo)' : fix.source === 'simulated' ? '  (sim)' : ''
-  const acc = fix.accuracyM != null ? `  ±${fix.accuracyM}m` : ''
-  const loc = `${fix.lat.toFixed(5)}, ${fix.lng.toFixed(5)}${acc}${srcMark}`
+  // Provenance marker: (photo) = EXIF from the camera. No fix = say so —
+  // the strip never carries a fabricated position.
+  const srcMark = fix?.source === 'photo_exif' ? '  (photo)' : ''
+  const acc = fix?.accuracyM != null ? `  ±${fix.accuracyM}m` : ''
+  const loc = fix ? `${fix.lat.toFixed(5)}, ${fix.lng.toFixed(5)}${acc}${srcMark}` : 'GPS unavailable'
 
   ctx.textBaseline = 'alphabetic'
   ctx.fillStyle = '#e3c766' // gold-soft parcel ref, Georgia serif

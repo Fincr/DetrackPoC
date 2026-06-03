@@ -81,8 +81,8 @@ numbers, for type-in:
    - the stamped photo thumbnail (click → full size),
    - the `scanned CP-…` line proving the barcode→parcel link,
    - **Captured (device)** and **Synced (server)** timestamps side by side,
-   - a map-pin link with coordinates and ±accuracy (gold **GPS simulated**
-     badge when the fix was a fallback),
+   - a map-pin link with coordinates and ±accuracy (red **No GPS** badge
+     when the capture had no real fix — there is no simulated fallback),
    - the failure reason on failed deliveries, and the signature if one was
      drawn.
 
@@ -106,8 +106,9 @@ the Completed section. Each attempt is its own POD in the dispatcher.
 The capture screen shows a live **Distance from address** chip (green ≤250 m,
 gold ≤1 km, red beyond), the distance is stored on the record, and the
 dispatcher flags far captures with a red **"x km from address"** pill.
-With simulated GPS (Erith) the Edinburgh/Cardiff/Leeds parcels go visibly
-red — a nice on-purpose demo of the flag.
+Capturing from a desk means every parcel except the nearest goes visibly
+red — a nice on-purpose demo of the flag (with no fix at all, the distance
+shows "—" and the dispatcher gets a **No GPS** badge instead).
 
 ### Offline resilience details
 - A capture that the server permanently rejects is skipped after 5 attempts
@@ -128,8 +129,10 @@ fallback).
 ## Useful extras
 
 - **Force a sync pass:** tap the `N queued · N synced` badge.
-- **Simulated GPS on demand:** DevTools → ⋮ → More tools → Sensors →
-  Location → *Location unavailable* → the GPS chip turns gold "(simulated)"
-  and the stamp gains `(sim)`.
+- **No-fix state on demand:** DevTools → ⋮ → More tools → Sensors →
+  Location → *Location unavailable* → the GPS chip turns red **no fix**
+  with a reason note + Retry, the stamp reads `GPS unavailable`, and the
+  synced record stores no location. (Sensors → custom coordinates fakes a
+  *real-looking* device fix — handy for demoing the geofence.)
 - **Reset everything:** `npx supabase db reset` (server data) + DevTools →
   Application → Storage → *Clear site data* (local queue).

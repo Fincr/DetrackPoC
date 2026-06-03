@@ -1,28 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Fix } from '../lib/types'
 
-/** Why a device fix couldn't be acquired (drives the "simulated" hint in the
- *  capture UI so a blocked permission isn't silently invisible). */
-export type SimReason = 'insecure' | 'denied' | 'unavailable' | 'timeout'
-
-/** Demo fallback (Erith, like the reference) used when the fix is denied,
- *  times out, or geolocation is unavailable (e.g. plain-HTTP LAN access).
- *  The 'simulated' source keeps trusted and untrusted reads distinguishable (§5). */
-const FALLBACK: Fix = { lat: 51.484, lng: 0.177, accuracyM: 35, source: 'simulated' }
+/** Why a device fix couldn't be acquired — surfaced in the capture UI so a
+ *  missing fix is never silent. There is NO simulated fallback: the record
+ *  gets a real fix or none at all. */
+export type NoFixReason = 'insecure' | 'denied' | 'unavailable' | 'timeout'
 
 interface Acquired {
-  fix: Fix
-  /** null when `fix` is a real device read */
-  reason: SimReason | null
+  fix: Fix | null
+  /** set iff fix is null */
+  reason: NoFixReason | null
 }
 
 function acquire(opts: PositionOptions): Promise<Acquired> {
   return new Promise((resolve) => {
     // Browsers only expose real geolocation in secure contexts — a phone
-    // hitting the dev server over plain-HTTP LAN lands here. `npm run
-    // dev:https` is the fix for that case.
+    // hitting the dev server over plain-HTTP LAN lands here. Note that
+    // self-signed HTTPS (dev:https) is "secure" enough to pass this check
+    // but Chrome still auto-denies the permission prompt on cert-error
+    // origins, which then reports as 'denied' below.
     if (!window.isSecureContext || !('geolocation' in navigator)) {
-      resolve({ fix: FALLBACK, reason: 'insecure' })
+      resolve({ fix: null, reason: 'insecure' })
       return
     }
     navigator.geolocation.getCurrentPosition(
@@ -38,7 +36,7 @@ function acquire(opts: PositionOptions): Promise<Acquired> {
         }),
       (err) =>
         resolve({
-          fix: FALLBACK,
+          fix: null,
           reason:
             err.code === err.PERMISSION_DENIED
               ? 'denied'
@@ -51,39 +49,49 @@ function acquire(opts: PositionOptions): Promise<Acquired> {
   })
 }
 
-/** Two-stage acquisition:
- *  - Mount: a warm-up read (also surfaces the permission prompt before the
- *    driver reaches the shutter). `fix` is null while it's in flight.
+/** Two-stage acquisition, real-GPS-only:
+ *  - Mount (and manual `retry()`): a warm-up read that also surfaces the
+ *    permission prompt before the driver reaches the shutter. `fix` is null
+ *    with `acquiring` true while in flight.
  *  - Shutter (`getFix`): a *fresh* read so the recorded position is where
- *    the photo was actually taken, not where the screen was opened.
- *    `maximumAge` lets the still-warm mount fix answer instantly; if the
- *    fresh read fails, a real mount-time fix still beats the simulated
- *    fallback (it can only be screen-age stale). */
+ *    the photo was actually taken. `maximumAge` lets the still-warm mount
+ *    fix answer instantly; if the fresh read fails, a real mount-time fix
+ *    still wins (it can only be screen-age stale). If nothing real is
+ *    available the caller gets null — never a fabricated point. */
 export function useGeolocation() {
   const [acquired, setAcquired] = useState<Acquired | null>(null)
-  const mountRef = useRef<Promise<Acquired> | null>(null)
+  const warmupRef = useRef<Promise<Acquired> | null>(null)
 
-  useEffect(() => {
+  const retry = useCallback(() => {
+    setAcquired(null) // chip returns to "acquiring…" while the retry runs
     const p = acquire({ enableHighAccuracy: true, timeout: 8000, maximumAge: 0 })
-    mountRef.current = p
-    let live = true
-    void p.then((a) => live && setAcquired(a))
-    return () => {
-      live = false
-    }
+    warmupRef.current = p
+    void p.then((a) => {
+      if (warmupRef.current === p) setAcquired(a) // ignore superseded retries
+    })
   }, [])
 
-  const getFix = useCallback(async (): Promise<Fix> => {
+  useEffect(() => {
+    retry()
+  }, [retry])
+
+  const getFix = useCallback(async (): Promise<Fix | null> => {
     const fresh = await acquire({ enableHighAccuracy: true, timeout: 6000, maximumAge: 15000 })
-    if (fresh.reason === null) {
+    if (fresh.fix) {
       setAcquired(fresh)
       return fresh.fix
     }
-    const mount = await (mountRef.current ?? Promise.resolve(fresh))
-    if (mount.reason === null) return mount.fix
+    const warm = await (warmupRef.current ?? Promise.resolve(fresh))
+    if (warm.fix) return warm.fix
     setAcquired(fresh) // surface the freshest failure reason in the UI
-    return fresh.fix
+    return null
   }, [])
 
-  return { fix: acquired?.fix ?? null, simReason: acquired?.reason ?? null, getFix }
+  return {
+    fix: acquired?.fix ?? null,
+    noFixReason: acquired?.reason ?? null,
+    acquiring: acquired === null,
+    getFix,
+    retry,
+  }
 }

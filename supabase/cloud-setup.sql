@@ -17,8 +17,15 @@ create table parcels (
   destination     geography(point, 4326),    -- where it *should* go
   area            text default 'Domestic'
                   check (area in ('Domestic','International','Fulfilment','Sortation')),
+  -- 'failed' here = a failed ATTEMPT just synced; the app immediately sets it
+  -- back to pending (re-attempt) until attempts hits the cap, then 'returned'.
   status          text default 'pending'
-                  check (status in ('pending','delivered','failed')),
+                  check (status in ('pending','delivered','failed','returned')),
+  -- The run this parcel belongs to. pending AND due_date < today = rollover
+  -- (derived in the app — no nightly job).
+  due_date        date not null default current_date,
+  attempts        int not null default 0,    -- failed delivery attempts so far
+  last_failure    text,                      -- reason of the most recent failed attempt
   created_at      timestamptz default now()
 );
 
@@ -35,9 +42,13 @@ create table pod_records (
   -- (directly when online, or by the sync worker draining the queue), so a
   -- plain default gives the server-side receive time without trusting the client.
   synced_at       timestamptz default now(),
-  location        geography(point, 4326),
+  location        geography(point, 4326),    -- null = no real fix at capture (never simulated)
   gps_accuracy_m  int,
-  gps_simulated   boolean default false,     -- true if the device couldn't get a real fix
+  gps_simulated   boolean default false,     -- legacy; new captures always write false
+  -- Fix provenance: photo_exif | device | null (no fix). 'simulated' kept in
+  -- the check only for rows synced by older app builds.
+  gps_source      text check (gps_source in ('photo_exif', 'device', 'simulated')),
+  dest_distance_m int,                       -- geofence: metres from parcels.destination at capture
   signature_path  text,                      -- storage path, nullable
   driver_id       text default 'drv_demo',
   created_at      timestamptz default now(),
@@ -105,6 +116,10 @@ insert into parcels (tracking_number, recipient_name, address_line, postcode, de
 
   ('CP-400008-GB', 'NN4 Regional Sort Hub',     'Unit 9, Saddlers Way, Northampton',            'NN4 7HD',
    st_setsrid(st_makepoint(-0.89320, 52.21510), 4326)::geography, 'Sortation');
+
+-- One stop left over from yesterday's run, so the ROLLOVER state is visible
+-- on first load (mirrors supabase/seed.sql).
+update parcels set due_date = current_date - 1 where tracking_number = 'CP-100003-GB';
 
 -- Hosted-project gotcha: if RLS got enabled on these tables (dashboard
 -- prompts encourage it), the anon key reads 0 rows and writes are rejected.

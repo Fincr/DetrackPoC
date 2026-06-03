@@ -169,9 +169,16 @@ function PodCard({ pod, onPhoto }: { pod: JoinedPod; onPhoto: (url: string) => v
                 GPS from photo
               </span>
             )}
+            {/* Legacy badge — new captures never simulate a fix */}
             {pod.gps_simulated && (
               <span className="rounded-full border border-gold/40 bg-gold/10 px-2.5 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.6px] text-gold">
                 GPS simulated
+              </span>
+            )}
+            {/* Real-GPS-only: a capture without a fix is flagged, not faked */}
+            {!point && (
+              <span className="rounded-full border border-fail/40 bg-fail/10 px-2.5 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.6px] text-fail">
+                No GPS
               </span>
             )}
           </div>
