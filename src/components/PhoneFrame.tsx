@@ -13,6 +13,9 @@ export function PhoneFrame({ children }: { children: ReactNode }) {
           Scan the label, photograph the parcel — timestamp and location are
           burned into the image and packaged into a delivery record.
         </p>
+        <a href="#/dispatch" className="mt-2 inline-block text-xs text-[#9fb0d6] underline">
+          Dispatcher view →
+        </a>
       </header>
       <div className="relative w-[390px] max-w-full overflow-hidden rounded-phone bg-paper shadow-phone">
         {children}
