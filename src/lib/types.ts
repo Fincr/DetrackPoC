@@ -1,9 +1,13 @@
 // Row shapes mirroring the §4 schema (hand-written — a PoC doesn't need codegen).
 
 export type Area = 'Domestic' | 'International' | 'Fulfilment' | 'Sortation'
-export type ParcelStatus = 'pending' | 'delivered' | 'failed'
+export type ParcelStatus = 'pending' | 'delivered' | 'failed' | 'returned'
 export type PodStatus = 'delivered' | 'failed'
 export type PhotoType = 'label' | 'where_left'
+
+/** A failed delivery is an attempt; the parcel goes terminal ('returned')
+ *  after this many failures. */
+export const MAX_DELIVERY_ATTEMPTS = 3
 
 /** Where a POD's fix came from, most → least trustworthy */
 export type GpsSource = 'photo_exif' | 'device' | 'simulated'
@@ -29,6 +33,9 @@ export interface Parcel {
   status: ParcelStatus
   /** The run this parcel belongs to (date). Pending past this = rollover. */
   due_date: string
+  /** Failed delivery attempts so far (see MAX_DELIVERY_ATTEMPTS) */
+  attempts: number
+  last_failure: string | null
   created_at: string
 }
 
@@ -50,6 +57,8 @@ export interface PodRecord {
   gps_accuracy_m: number | null
   gps_simulated: boolean
   gps_source: GpsSource
+  /** Metres between the capture fix and the parcel's destination (geofence) */
+  dest_distance_m: number | null
   signature_path: string | null
   driver_id: string
   created_at: string

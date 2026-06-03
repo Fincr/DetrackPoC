@@ -15,6 +15,8 @@ export interface QueuedPod {
   receivedBy: string | null
   capturedAt: string // ISO, device clock (evidence time)
   location: Fix | null
+  /** Metres from the parcel's destination at capture (geofence), if known */
+  destDistanceM: number | null
   photos: { type: PhotoType; blob: Blob; origKb: number; compressedKb: number }[]
   signature: Blob | null
   /** 0 = queued, 1 = synced (numbers — Dexie can't index booleans) */

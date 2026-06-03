@@ -1,9 +1,10 @@
 import exifr from 'exifr'
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { SignatureBox, type SignatureHandle } from '../components/SignatureBox'
 import { TopBar } from '../components/TopBar'
 import { useGeolocation } from '../hooks/useGeolocation'
 import type { QueuedPod } from '../lib/db'
+import { fmtDistance, haversineM, parseEwkbPoint } from '../lib/geo'
 import { queuePod, type CapturedPhoto } from '../lib/pod'
 import { stampAndCompress, type StampedPhoto } from '../lib/stamp'
 import { syncNow } from '../lib/syncWorker'
@@ -43,6 +44,8 @@ export function CaptureScreen({
   // The fix actually burned into the label photo — the record must match the image
   const [usedFix, setUsedFix] = useState<Fix | null>(null)
   const barRef = useRef<HTMLSpanElement>(null)
+  // Geofence: where this parcel *should* be delivered (EWKB from PostgREST)
+  const destination = useMemo(() => parseEwkbPoint(parcel.destination), [parcel.destination])
 
   async function takePhoto(file: File, slot: 'label' | 'where_left') {
     try {
@@ -105,6 +108,7 @@ export function CaptureScreen({
         capturedAt,
         photos,
         location: gpsFix,
+        destDistanceM: destination ? Math.round(haversineM(gpsFix, destination)) : null,
         signature,
       })
       void syncNow() // fire-and-forget — drains now if we happen to be online
@@ -178,6 +182,32 @@ export function CaptureScreen({
                 pending={!shown}
                 sim={shown?.source === 'simulated'}
               />
+            )
+          })()}
+          {/* Geofence chip: how far the current fix is from where the parcel
+              should be going — green near, gold/red the further off it is */}
+          {(() => {
+            const shown = usedFix ?? fix
+            const dist = shown && destination ? haversineM(shown, destination) : null
+            return (
+              <div className="col-span-2 rounded-[11px] border border-line bg-white px-[11px] py-[9px]">
+                <div className="text-[10px] font-bold uppercase tracking-[0.6px] text-muted">
+                  Distance from address
+                </div>
+                <div
+                  className={`mt-[3px] text-[13px] font-semibold tabular-nums ${
+                    dist == null
+                      ? 'font-medium text-muted'
+                      : dist <= 250
+                        ? 'text-ok'
+                        : dist <= 1000
+                          ? 'text-gold'
+                          : 'text-fail'
+                  }`}
+                >
+                  {dist == null ? '—' : fmtDistance(dist)}
+                </div>
+              </div>
             )
           })()}
         </div>

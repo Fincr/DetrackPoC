@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { ColourJson } from '../components/ColourJson'
 import { useQueuedPod } from '../hooks/useSyncStatus'
 import type { QueuedPod } from '../lib/db'
+import { fmtDistance } from '../lib/geo'
 import { photoPath, signaturePath } from '../lib/pod'
 
 /** Confirmation: green banner, the stamped photo, then a human-readable
@@ -104,6 +105,19 @@ export function ResultScreen({
             '—'
           )}
         </Row>
+        <Row k="From address">
+          {pod.destDistanceM == null ? (
+            '—'
+          ) : (
+            <span
+              className={
+                pod.destDistanceM <= 250 ? 'text-ok' : pod.destDistanceM <= 1000 ? 'text-gold' : 'text-fail'
+              }
+            >
+              {fmtDistance(pod.destDistanceM)}
+            </span>
+          )}
+        </Row>
         <Row k="Photos">
           {label ? `Label ${label.compressedKb} KB` : '—'}
           {where ? ` · Where left ${where.compressedKb} KB` : ''}
@@ -169,6 +183,7 @@ function buildTechRecord(pod: QueuedPod, synced: boolean) {
       ? { lat: pod.location.lat, lng: pod.location.lng, accuracy_m: pod.location.accuracyM }
       : null,
     gps_source: pod.location?.source ?? 'device',
+    dest_distance_m: pod.destDistanceM,
     signature: pod.signature ? (synced ? signaturePath(pod.podId) : 'queued') : null,
     photos: pod.photos.map((p) => ({
       type: p.type,

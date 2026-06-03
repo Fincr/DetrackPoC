@@ -7,6 +7,27 @@
  *    bytes 9-16   lng (float64 LE)
  *    bytes 17-24  lat (float64 LE)
  */
+/** Great-circle distance in metres (haversine — ample accuracy for a
+ *  "was this captured near the address?" geofence check). */
+export function haversineM(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+): number {
+  const R = 6371000
+  const toRad = (d: number) => (d * Math.PI) / 180
+  const dLat = toRad(b.lat - a.lat)
+  const dLng = toRad(b.lng - a.lng)
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2
+  return 2 * R * Math.asin(Math.sqrt(s))
+}
+
+/** "96 m" / "2.3 km" */
+export function fmtDistance(m: number): string {
+  return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`
+}
+
 export function parseEwkbPoint(hex: unknown): { lat: number; lng: number } | null {
   if (typeof hex !== 'string' || hex.length < 50 || !hex.startsWith('01')) return null
   try {

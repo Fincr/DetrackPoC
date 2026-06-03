@@ -2,12 +2,13 @@ import { useRef, useState } from 'react'
 import { BarcodeScanner } from '../components/BarcodeScanner'
 import { TopBar } from '../components/TopBar'
 import { useSyncStatus } from '../hooks/useSyncStatus'
-import { isRollover, type Parcel, type PodStatus } from '../lib/types'
+import { isRollover, MAX_DELIVERY_ATTEMPTS, type Parcel, type PodStatus } from '../lib/types'
 
 const STATUS_STYLES: Record<Parcel['status'], string> = {
   pending: 'text-muted',
   delivered: 'text-ok',
   failed: 'text-fail',
+  returned: 'text-fail',
 }
 
 /** Driver home (§6.1): scan entry, the active run (rollovers first), then a
@@ -27,7 +28,10 @@ export function StopsScreen({
   // captured stop reads as done the moment the driver completes it
   const { queuedParcels } = useSyncStatus()
 
-  const isDone = (p: Parcel) => p.status !== 'pending' || queuedParcels.has(p.id)
+  // Done = terminal on the server, or a *delivered* capture queued locally.
+  // A queued FAILED capture keeps the stop active — it's an attempt, the
+  // parcel will be retried (and rolls over) until MAX_DELIVERY_ATTEMPTS.
+  const isDone = (p: Parcel) => p.status !== 'pending' || queuedParcels.get(p.id) === 'delivered'
   // useParcels orders by due_date first, so rollovers naturally lead the run
   const active = parcels?.filter((p) => !isDone(p)) ?? []
   const completed = parcels?.filter(isDone) ?? []
@@ -81,19 +85,29 @@ export function StopsScreen({
           </div>
         )}
 
-        {active.map((p, i) => (
-          <StopRow key={p.id} parcel={p} onSelect={onSelect}>
-            {isRollover(p) ? (
-              <span className="rounded-full border border-gold/50 bg-gold/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px] text-gold">
-                Rollover · {dueLabel(p.due_date)}
-              </span>
-            ) : (
-              <span className="text-[11px] font-bold uppercase tracking-[0.6px] text-muted">
-                Stop {i + 1}
-              </span>
-            )}
-          </StopRow>
-        ))}
+        {active.map((p, i) => {
+          const queuedFailed = queuedParcels.get(p.id) === 'failed'
+          // Attempt counter: server-confirmed attempts, +1 if one is queued
+          const attempts = p.attempts + (queuedFailed ? 1 : 0)
+          const note =
+            attempts > 0
+              ? `Attempt ${Math.min(attempts + 1, MAX_DELIVERY_ATTEMPTS)} of ${MAX_DELIVERY_ATTEMPTS}` +
+                (queuedFailed ? ' · failed attempt queued' : p.last_failure ? ` · last: ${p.last_failure}` : '')
+              : undefined
+          return (
+            <StopRow key={p.id} parcel={p} onSelect={onSelect} note={note}>
+              {isRollover(p) ? (
+                <span className="rounded-full border border-gold/50 bg-gold/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px] text-gold">
+                  Rollover · {dueLabel(p.due_date)}
+                </span>
+              ) : (
+                <span className="text-[11px] font-bold uppercase tracking-[0.6px] text-muted">
+                  Stop {i + 1}
+                </span>
+              )}
+            </StopRow>
+          )
+        })}
 
         {completed.length > 0 && (
           <>
@@ -102,7 +116,13 @@ export function StopsScreen({
               const queuedStatus = queuedParcels.get(p.id)
               const status: PodStatus | Parcel['status'] = queuedStatus ?? p.status
               return (
-                <StopRow key={p.id} parcel={p} onSelect={onSelect} dim>
+                <StopRow
+                  key={p.id}
+                  parcel={p}
+                  onSelect={onSelect}
+                  dim
+                  note={p.status === 'returned' ? `Return to sender — ${p.attempts} failed attempts` : undefined}
+                >
                   <span className="text-[11px] font-bold uppercase tracking-[0.6px]">
                     <span className={STATUS_STYLES[status as Parcel['status']] ?? 'text-muted'}>
                       {status === 'delivered' ? '✓ delivered' : status}
@@ -222,16 +242,19 @@ function ScanSheet({
   )
 }
 
-/** One stop in either section; the status slot comes in as children. */
+/** One stop in either section; the status slot comes in as children, an
+ *  optional note line (attempt history etc.) renders under the address. */
 function StopRow({
   parcel: p,
   onSelect,
   dim = false,
+  note,
   children,
 }: {
   parcel: Parcel
   onSelect: (parcel: Parcel) => void
   dim?: boolean
+  note?: string
   children: React.ReactNode
 }) {
   return (
@@ -248,6 +271,7 @@ function StopRow({
         {p.address_line}
         {p.postcode ? `, ${p.postcode}` : ''}
       </div>
+      {note && <div className="mt-1 text-[11.5px] font-semibold text-fail">{note}</div>}
       <div className="mt-1.5 flex items-center justify-between">
         <span className="font-mono text-[11px] tracking-[1px] text-navy-500">{p.tracking_number}</span>
         <span className="text-[10px] font-bold uppercase tracking-[0.6px] text-gold">{p.area}</span>

@@ -6,7 +6,9 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt': new builds surface a "tap to refresh" toast instead of the
+      // service worker silently serving the old version one more time
+      registerType: 'prompt',
       includeAssets: ['icon.svg'],
       manifest: {
         name: 'ePOD Capture',

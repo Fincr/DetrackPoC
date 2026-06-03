@@ -16,8 +16,9 @@ npm run dev                 # http://localhost:5173
 - Re-seed at any time: `npx supabase db reset`
 - For the most faithful offline test use a production build: `npm run build && npm run preview`
 
-Seeded tracking numbers (type these, or render one as a Code 128 / QR at
-[zxing.org generator](https://zxing.appspot.com/generator) and scan it):
+Scannable labels for every seeded parcel (Code 128 + QR, printable) live at
+**`/labels.html`** — open it on one screen and scan with the phone. Tracking
+numbers, for type-in:
 
 `CP-849213-GB` · `CP-100002-GB` · `CP-100003-GB` · `CP-200004-GB` ·
 `CP-200005-GB` · `CP-300006-GB` · `CP-300007-GB` · `CP-400008-GB`
@@ -84,6 +85,43 @@ Seeded tracking numbers (type these, or render one as a Code 128 / QR at
      badge when the fix was a fallback),
    - the failure reason on failed deliveries, and the signature if one was
      drawn.
+
+---
+
+## Beyond the §9 tests — feature demos
+
+### Rollover (priority carry-over)
+`CP-100003-GB` (Dev & Sons Hardware) is seeded **due yesterday**: it leads
+the run with a gold **ROLLOVER · 02 Jun** badge. Any stop still unfinished at
+the end of a day does the same automatically the next day — derived from
+`due_date`, no overnight job.
+
+### Attempt model (failed ≠ finished)
+Fail a stop with a reason: it stays in the **active** list showing
+*"Attempt 2 of 3 · last: No access"* and rolls over day to day. Fail the same
+stop three times and it goes terminal — **returned** (return to sender) in
+the Completed section. Each attempt is its own POD in the dispatcher.
+
+### Geofence (was it captured at the right place?)
+The capture screen shows a live **Distance from address** chip (green ≤250 m,
+gold ≤1 km, red beyond), the distance is stored on the record, and the
+dispatcher flags far captures with a red **"x km from address"** pill.
+With simulated GPS (Erith) the Edinburgh/Cardiff/Leeds parcels go visibly
+red — a nice on-purpose demo of the flag.
+
+### Offline resilience details
+- A capture that the server permanently rejects is skipped after 5 attempts
+  (salmon **"N retry"** in the badge; tap the badge to force-retry it) — it
+  can never block the captures behind it.
+- The stop list is cached locally: cold-start the app with no signal and the
+  run sheet still renders.
+- New builds show a **"new version — Refresh"** toast instead of silently
+  serving the old version once.
+
+### Live dispatcher
+Keep `#/dispatch` open on one screen while completing a delivery on the
+phone: the POD appears the moment it syncs (Supabase Realtime; 10s poll as
+fallback).
 
 ---
 

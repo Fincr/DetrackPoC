@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { parseEwkbPoint } from '../lib/geo'
+import { fmtDistance, parseEwkbPoint } from '../lib/geo'
 import { evidenceUrl } from '../lib/pod'
 import { supabase } from '../lib/supabase'
 import type { Parcel, PodPhoto, PodRecord } from '../lib/types'
@@ -30,11 +30,20 @@ export function DispatcherScreen() {
     }
   }, [])
 
-  // Refresh on load + a lazy poll so PODs syncing from a driver device appear
+  // Realtime: new PODs appear the instant a driver device syncs (the table is
+  // in the supabase_realtime publication). The lazy poll stays as a fallback
+  // for environments where Realtime isn't enabled.
   useEffect(() => {
     void load()
     const id = window.setInterval(() => void load(), 10_000)
-    return () => clearInterval(id)
+    const channel = supabase
+      .channel('pod-feed')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pod_records' }, () => void load())
+      .subscribe()
+    return () => {
+      clearInterval(id)
+      void supabase.removeChannel(channel)
+    }
   }, [load])
 
   return (
@@ -150,6 +159,11 @@ function PodCard({ pod, onPhoto }: { pod: JoinedPod; onPhoto: (url: string) => v
               {pod.parcel?.tracking_number ?? 'Unmatched parcel'}
             </h2>
             <StatusPill failed={failed} />
+            {pod.dest_distance_m != null && pod.dest_distance_m > 250 && (
+              <span className="rounded-full border border-fail/40 bg-fail/10 px-2.5 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.6px] text-fail">
+                {fmtDistance(pod.dest_distance_m)} from address
+              </span>
+            )}
             {pod.gps_source === 'photo_exif' && (
               <span className="rounded-full border border-ok/40 bg-ok/10 px-2.5 py-0.5 text-[10.5px] font-bold uppercase tracking-[0.6px] text-ok">
                 GPS from photo
@@ -188,6 +202,18 @@ function PodCard({ pod, onPhoto }: { pod: JoinedPod; onPhoto: (url: string) => v
             <Meta k="Received by" v={pod.received_by ?? '—'} />
             <Meta k="Captured (device)" v={fmt(pod.captured_at)} />
             <Meta k="Synced (server)" v={fmt(pod.synced_at)} />
+            <Meta
+              k="From address"
+              v={
+                pod.dest_distance_m == null ? (
+                  '—'
+                ) : (
+                  <span className={pod.dest_distance_m <= 250 ? 'text-ok' : 'text-fail'}>
+                    {fmtDistance(pod.dest_distance_m)}
+                  </span>
+                )
+              }
+            />
             <Meta
               k={`Location ${pod.gps_source === 'photo_exif' ? '(photo)' : pod.gps_simulated ? '(sim)' : ''}`}
               v={

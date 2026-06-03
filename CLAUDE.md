@@ -47,6 +47,17 @@ Routing:  main.tsx hash router — #/dispatch = DispatcherScreen, else driver Ap
   client-generated `podId`; storage paths are deterministic
   (`{podId}/label.jpg`, `{podId}/where_left.jpg`, `{podId}/signature.png`).
   A retry must never duplicate — preserve this in any change.
+- **Poison items:** after `MAX_AUTO_ATTEMPTS` (5) failures an item is
+  "stuck" — skipped by automatic passes (never blocks the queue), retried by
+  a manual badge tap (`syncNow({includeStuck:true})`).
+- **Attempt model:** delivered = terminal; failed keeps the parcel `pending`
+  (re-attempt, rolls over) with `parcels.attempts`/`last_failure` updated at
+  sync; at `MAX_DELIVERY_ATTEMPTS` (3) → terminal `'returned'`.
+- **Geofence:** haversine (geo.ts) between the capture fix and
+  `parcels.destination` at capture → `pod_records.dest_distance_m`;
+  thresholds 250 m ok / 1 km warn used in capture chip, receipt, dispatcher.
+- **Offline cache:** Dexie v2 `parcels` table is a read-through cache of the
+  stop list (cold offline start still renders the run).
 - **Trust boundary:** `captured_at` = device clock at the shutter;
   `synced_at` = DB column default `now()` at first insert (never sent by the
   client, never overwritten on conflict-update).

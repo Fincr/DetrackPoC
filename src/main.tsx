@@ -7,8 +7,14 @@ import { supabaseConfigured } from './lib/supabase.ts'
 import { startSyncTriggers } from './lib/syncWorker.ts'
 import { DispatcherScreen } from './screens/DispatcherScreen.tsx'
 
-// Auto-update service worker — keeps the offline app shell fresh.
-registerSW({ immediate: true })
+// Service worker with an explicit update prompt — when a new build is
+// waiting, Root shows a toast instead of serving the stale version once.
+const updateSW = registerSW({
+  immediate: true,
+  onNeedRefresh() {
+    window.dispatchEvent(new Event('sw-update-available'))
+  },
+})
 
 // §8 sync triggers: app load, `online` events, short interval.
 if (supabaseConfigured) startSyncTriggers()
@@ -16,13 +22,35 @@ if (supabaseConfigured) startSyncTriggers()
 /** Two top-level views, one hash route: #/dispatch = dispatcher, else driver. */
 function Root() {
   const [hash, setHash] = useState(window.location.hash)
+  const [updateReady, setUpdateReady] = useState(false)
   useEffect(() => {
     const onHash = () => setHash(window.location.hash)
+    const onUpdate = () => setUpdateReady(true)
     window.addEventListener('hashchange', onHash)
-    return () => window.removeEventListener('hashchange', onHash)
+    window.addEventListener('sw-update-available', onUpdate)
+    return () => {
+      window.removeEventListener('hashchange', onHash)
+      window.removeEventListener('sw-update-available', onUpdate)
+    }
   }, [])
   if (!supabaseConfigured) return <SetupNotice />
-  return hash === '#/dispatch' ? <DispatcherScreen /> : <App />
+  return (
+    <>
+      {hash === '#/dispatch' ? <DispatcherScreen /> : <App />}
+      {updateReady && (
+        <div className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full border border-white/15 bg-navy-600 py-2 pl-4 pr-2 text-[13px] text-white shadow-2xl">
+          A new version is available
+          <button
+            type="button"
+            onClick={() => void updateSW(true)}
+            className="rounded-full bg-gold px-3.5 py-1.5 font-serif text-[13px] text-navy"
+          >
+            Refresh
+          </button>
+        </div>
+      )}
+    </>
+  )
 }
 
 /** Shown instead of a blank page when the build had no Supabase env vars. */

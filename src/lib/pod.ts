@@ -1,7 +1,7 @@
 import { db, type QueuedPod } from './db'
 import { EVIDENCE_BUCKET, supabase } from './supabase'
 import { emitSync } from './syncEvents'
-import type { Fix, Parcel, PhotoType, PodStatus } from './types'
+import { MAX_DELIVERY_ATTEMPTS, type Fix, type Parcel, type PhotoType, type PodStatus } from './types'
 
 export interface CapturedPhoto {
   type: PhotoType
@@ -20,6 +20,7 @@ export interface CaptureBundle {
   capturedAt: Date
   photos: CapturedPhoto[]
   location: Fix | null
+  destDistanceM: number | null
   signature: Blob | null
 }
 
@@ -47,6 +48,7 @@ export async function queuePod(bundle: CaptureBundle): Promise<QueuedPod> {
     receivedBy: bundle.receivedBy || null,
     capturedAt: bundle.capturedAt.toISOString(),
     location: bundle.location,
+    destDistanceM: bundle.destDistanceM,
     photos: bundle.photos.map((p) => ({ type: p.type, blob: p.blob, origKb: p.origKb, compressedKb: p.compressedKb })),
     signature: bundle.signature,
     synced: 0,
@@ -102,6 +104,7 @@ export async function uploadPod(pod: QueuedPod): Promise<string | null> {
         gps_accuracy_m: pod.location?.accuracyM ?? null,
         gps_simulated: pod.location?.source === 'simulated',
         gps_source: pod.location?.source ?? 'device',
+        dest_distance_m: pod.destDistanceM,
         signature_path: pod.signature ? signaturePath(pod.podId) : null,
         driver_id: 'drv_demo',
       },
@@ -128,8 +131,29 @@ export async function uploadPod(pod: QueuedPod): Promise<string | null> {
   }
 
   // 4. Reflect the outcome on the server-side stop list.
+  //    Delivered is terminal. Failed is an ATTEMPT: the parcel stays pending
+  //    (so it re-appears and rolls over) until MAX_DELIVERY_ATTEMPTS, then
+  //    goes terminal as 'returned'. Read-modify-write is acceptable for a
+  //    single-driver PoC; production would use an RPC/transaction.
   if (pod.parcelId) {
-    await supabase.from('parcels').update({ status: pod.status }).eq('id', pod.parcelId)
+    if (pod.status === 'delivered') {
+      await supabase.from('parcels').update({ status: 'delivered' }).eq('id', pod.parcelId)
+    } else {
+      const { data: parcel } = await supabase
+        .from('parcels')
+        .select('attempts')
+        .eq('id', pod.parcelId)
+        .single()
+      const attempts = (parcel?.attempts ?? 0) + 1
+      await supabase
+        .from('parcels')
+        .update({
+          attempts,
+          last_failure: pod.failureReason,
+          status: attempts >= MAX_DELIVERY_ATTEMPTS ? 'returned' : 'pending',
+        })
+        .eq('id', pod.parcelId)
+    }
   }
 
   return (record as { synced_at: string | null } | null)?.synced_at ?? null
