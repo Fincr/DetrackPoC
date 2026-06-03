@@ -32,8 +32,22 @@ npm run dev                 # http://localhost:5173
 
 ## Seeded tracking numbers
 
-_(populated at Checkpoint 2 — these are the barcode values you can type or
-scan to open a capture)_
+These are the barcode values — scan a label, or just type one in, to open a
+capture with that parcel pre-selected:
+
+| Tracking number | Recipient | Area |
+| --- | --- | --- |
+| `CP-849213-GB` | Meridian Logistics, Erith | Domestic |
+| `CP-100002-GB` | Patricia Holloway, Maidstone | Domestic |
+| `CP-100003-GB` | Dev & Sons Hardware, London | Domestic |
+| `CP-200004-GB` | Brightwell Imports Ltd, Edinburgh | International |
+| `CP-200005-GB` | Atlantique Wines (UK), Cardiff | International |
+| `CP-300006-GB` | Acme Home Goods — J. Mercer, Leeds | Fulfilment |
+| `CP-300007-GB` | Tillys Toy Shop, Norwich | Fulfilment |
+| `CP-400008-GB` | NN4 Regional Sort Hub, Northampton | Sortation |
+
+(`CP-849213-GB` is the parcel from `design-reference.html`.) To re-seed at any
+time: `npx supabase db reset`.
 
 ## Simulating offline
 
