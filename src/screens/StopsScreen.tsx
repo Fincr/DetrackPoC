@@ -300,6 +300,20 @@ export function StopsScreen({
   )
 }
 
+/** Why a fix couldn't be acquired — actionable where the user can act.
+ *  (Same model as the capture flow: real GPS or nothing, never silent.) */
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent)
+const NO_FIX_NOTES: Record<NonNullable<ReturnType<typeof useGeolocation>['noFixReason']>, string> = {
+  insecure:
+    'Location needs a secure address — open the app at http://localhost:5190 on this machine (or an HTTPS address), not the plain-HTTP LAN URL.',
+  denied: IS_IOS
+    ? 'Location is blocked by iOS — Settings → Privacy & Security → Location Services: on, and allow your browser While Using the App. Then Retry.'
+    : 'Location is blocked for this site — click the padlock/tune icon by the address bar → Site settings → Location → Allow, then Retry.',
+  unavailable:
+    'The device returned no fix — on Windows turn on Settings → Privacy & security → Location → Location services, then Retry.',
+  timeout: 'Could not get a fix in time — Retry, ideally with Wi-Fi on (laptops locate via nearby networks).',
+}
+
 /** One quick scan in this sheet session, for the running log. */
 interface SessionScan {
   ref: string
@@ -339,7 +353,7 @@ function ScanSheet({
   const [scans, setScans] = useState<SessionScan[]>([])
   // GPS for quick scans: warm-up on sheet open, fresh fix at each scan —
   // same real-or-nothing model as the capture screen.
-  const { fix, acquiring, getFix, retry } = useGeolocation()
+  const { fix, noFixReason, acquiring, getFix, retry } = useGeolocation()
   // The scanner re-fires the same frame several times a second — throttle
   // repeated values so one label doesn't log/flag repeatedly
   const lastUnknownRef = useRef({ v: '', t: 0 })
@@ -414,26 +428,34 @@ function ScanSheet({
 
         {/* GPS state for quick scans — real-or-nothing, never silent */}
         {mode !== 'delivered' && (
-          <div className="mt-2 flex min-h-[38px] items-center justify-between gap-3 rounded-[11px] border border-line bg-white px-3 py-1.5">
-            {acquiring ? (
-              <span className="flex items-center gap-2 text-[12px] font-medium text-muted">
-                <span className="h-3.5 w-3.5 flex-none animate-spin rounded-full border-2 border-navy/20 border-t-navy" />
-                Acquiring GPS…
-              </span>
-            ) : fix ? (
-              <span className="font-mono text-[12px] font-semibold tracking-[0.02em] text-ok">
-                {fix.lat.toFixed(5)}, {fix.lng.toFixed(5)}
-                {fix.accuracyM != null ? ` ±${fix.accuracyM}m` : ''}
-              </span>
-            ) : (
-              <>
-                <span className="text-[12px] font-semibold text-fail">
-                  No GPS fix — scans will record no location.
+          <div className="mt-2 rounded-[11px] border border-line bg-white px-3 py-1.5">
+            <div className="flex min-h-[30px] items-center justify-between gap-3">
+              {acquiring ? (
+                <span className="flex items-center gap-2 text-[12px] font-medium text-muted">
+                  <span className="h-3.5 w-3.5 flex-none animate-spin rounded-full border-2 border-navy/20 border-t-navy" />
+                  Acquiring GPS…
                 </span>
-                <button type="button" onClick={retry} className="flex-none text-[12px] font-bold text-navy-500 underline">
-                  Retry
-                </button>
-              </>
+              ) : fix ? (
+                <span className="font-mono text-[12px] font-semibold tracking-[0.02em] text-ok">
+                  {fix.lat.toFixed(5)}, {fix.lng.toFixed(5)}
+                  {fix.accuracyM != null ? ` ±${fix.accuracyM}m` : ''}
+                </span>
+              ) : (
+                <>
+                  <span className="text-[12px] font-semibold text-fail">
+                    No GPS fix — scans will record no location.
+                  </span>
+                  <button type="button" onClick={retry} className="flex-none text-[12px] font-bold text-navy-500 underline">
+                    Retry
+                  </button>
+                </>
+              )}
+            </div>
+            {/* WHY there's no fix — a blocked permission must never be silent */}
+            {!acquiring && !fix && noFixReason && (
+              <p className="mt-1 border-t border-line pt-1.5 text-[11.5px] leading-snug text-muted">
+                {NO_FIX_NOTES[noFixReason]}
+              </p>
             )}
           </div>
         )}

@@ -401,6 +401,17 @@ function PhotoZone({
       <span className="text-[13px] text-muted">
         Tap to open the camera<span className="hidden sm:inline"> · or drop an image here</span>
       </span>
+      {/* the input that makes the label tappable — without it only drag-drop worked */}
+      <input
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          if (file) onPhoto(file)
+        }}
+      />
     </label>
   )
 }
