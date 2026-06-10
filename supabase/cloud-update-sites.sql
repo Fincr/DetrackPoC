@@ -35,3 +35,17 @@ exception
   when duplicate_object then null;
   when undefined_object then null;
 end $$;
+
+-- Demo sites (mirrors seed.sql): one per route plus one unallocated. Guarded
+-- by name so re-running the script doesn't duplicate them.
+insert into sites (name, address_line, postcode, kind, destination, route_id)
+select v.name, v.address_line, v.postcode, v.kind,
+       st_setsrid(st_makepoint(v.lng, v.lat), 4326)::geography,
+       (select id from routes r where r.name = v.route_name)
+from (values
+  ('Citipost Collect — Camden',  '112 Camden High Street, London', 'NW1 0LU', 'store', -0.14260, 51.53900, 'Greater London'),
+  ('Heathrow Air Freight Depot', 'Shoreham Road East, Hounslow',   'TW6 3UA', 'depot', -0.44640, 51.46070, 'International & Air'),
+  ('Leeds Fulfilment Centre',    '40 Whitehall Road, Leeds',       'LS12 1BE', 'both', -1.56230, 53.79280, 'Fulfilment & Sort'),
+  ('Citipost Collect — Norwich', '5 Gentlemans Walk, Norwich',     'NR2 1NA', 'store', 1.29310, 52.62850, null)
+) as v(name, address_line, postcode, kind, lng, lat, route_name)
+where not exists (select 1 from sites s where s.name = v.name);
