@@ -499,7 +499,7 @@ function JobsList({
 
       {manifests && manifests.length === 0 && (
         <div className="rounded-2xl border border-line bg-white px-4 py-8 text-center text-[13px] text-muted">
-          No jobs yet — import a manifest above to create one.
+          No jobs yet — import a manifest to create one.
         </div>
       )}
 
