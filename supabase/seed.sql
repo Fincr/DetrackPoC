@@ -1,6 +1,21 @@
--- Demo dataset: 8 parcels across the four areas, realistic UK addresses,
--- unique tracking numbers (also listed in README.md for type-in scanning).
--- Parcel 1 is the exact parcel shown in design-reference.html.
+-- Demo dataset: 3 drivers each running one route, and 8 parcels across the
+-- four areas allocated across those routes — two left unallocated so the
+-- dispatcher's allocation flow has something to do. Tracking numbers are also
+-- listed in README.md for type-in scanning. Parcel CP-849213-GB is the exact
+-- parcel shown in design-reference.html.
+
+-- Drivers. id is text to match pod_records.driver_id; drv_demo = the
+-- design-reference driver, kept as the app's default identity.
+insert into drivers (id, name) values
+  ('drv_demo',  'Sam Okafor'),
+  ('drv_priya', 'Priya Nair'),
+  ('drv_dan',   'Dan Whitlock');
+
+-- Routes — one per driver, each covering one or more areas.
+insert into routes (name, driver_id, areas) values
+  ('Greater London',     'drv_demo',  array['Domestic']),
+  ('International & Air', 'drv_priya', array['International']),
+  ('Fulfilment & Sort',  'drv_dan',   array['Fulfilment', 'Sortation']);
 
 insert into parcels (tracking_number, recipient_name, address_line, postcode, destination, area) values
   ('CP-849213-GB', 'Meridian Logistics',        'Unit 4, Hailey Road Industrial Estate, Erith', 'DA18 4AA',
@@ -30,3 +45,11 @@ insert into parcels (tracking_number, recipient_name, address_line, postcode, de
 -- One stop left over from yesterday's run, so the ROLLOVER state is visible
 -- on first load.
 update parcels set due_date = current_date - 1 where tracking_number = 'CP-100003-GB';
+
+-- Allocate by area, but leave two parcels unallocated (one Domestic, one
+-- Fulfilment) so the dispatcher can demo manual + auto allocation. The
+-- design-reference parcel and the rollover both land on Sam's run.
+update parcels p set route_id = r.id
+  from routes r
+  where p.area = any (r.areas)
+    and p.tracking_number not in ('CP-100002-GB', 'CP-300007-GB');

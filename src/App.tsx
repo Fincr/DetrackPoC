@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AppShell } from './components/AppShell'
-import { SyncBadge } from './components/SyncBadge'
+import { useFleet } from './hooks/useFleet'
 import { useParcels } from './hooks/useParcels'
 import type { QueuedPod } from './lib/db'
+import { getDriverId, setDriverId } from './lib/driver'
 import { subscribeSync } from './lib/syncEvents'
 import { isRollover, type Parcel } from './lib/types'
 import { CaptureScreen } from './screens/CaptureScreen'
@@ -17,20 +18,49 @@ type View =
 
 export default function App() {
   const { parcels, error, reload } = useParcels()
+  const { fleet, error: fleetError } = useFleet()
   const [view, setView] = useState<View>({ name: 'stops' })
+  // Which driver this device is "signed in" as (persisted). Drives both the
+  // run filter and the driver_id stamped onto captures.
+  const [driverId, setDriver] = useState(getDriverId)
 
   // Stop statuses change server-side as the sync worker drains the queue —
   // refresh the list whenever the queue moves (no-op when offline).
   useEffect(() => subscribeSync(() => void reload()), [reload])
 
-  return (
-    <AppShell>
-      <SyncBadge />
+  function selectDriver(id: string) {
+    setDriverId(id) // persist
+    setDriver(id)
+    setView({ name: 'stops' }) // a different run — drop any in-progress capture
+  }
 
+  // Filter the run to the selected driver's routes. Degrade gracefully: while
+  // the fleet is still loading we hold the loading state; if it fails to load
+  // or has no routes (e.g. an un-migrated DB), fall back to showing every
+  // parcel so the app still works.
+  const myParcels = useMemo(() => {
+    const fleetLoading = fleet == null && !fleetError
+    if (parcels == null || fleetLoading) return null
+    if (fleet == null || fleet.routes.length === 0) return parcels
+    const myRouteIds = new Set(
+      fleet.routes.filter((r) => r.driver_id === driverId).map((r) => r.id),
+    )
+    return parcels.filter((p) => p.route_id != null && myRouteIds.has(p.route_id))
+  }, [parcels, fleet, fleetError, driverId])
+
+  // The route(s) this driver runs, for the run-sheet header.
+  const routeLabel = useMemo(() => {
+    const names = fleet?.routes.filter((r) => r.driver_id === driverId).map((r) => r.name) ?? []
+    return names.length ? names.join(' · ') : undefined
+  }, [fleet, driverId])
+
+  return (
+    <AppShell drivers={fleet?.drivers ?? null} selectedDriverId={driverId} onSelectDriver={selectDriver}>
       {view.name === 'stops' && (
         <StopsScreen
-          parcels={parcels}
+          parcels={myParcels}
           error={error}
+          routeLabel={routeLabel}
           onSelect={(parcel, scannedValue) =>
             setView({ name: 'capture', parcel, scannedValue: scannedValue ?? parcel.tracking_number })
           }
@@ -41,7 +71,8 @@ export default function App() {
         <CaptureScreen
           parcel={view.parcel}
           trackingScanned={view.scannedValue}
-          eyebrow={captureEyebrow(view.parcel, parcels)}
+          driverId={driverId}
+          eyebrow={captureEyebrow(view.parcel, myParcels)}
           onBack={() => setView({ name: 'stops' })}
           onComplete={(pod, previewUrl) => setView({ name: 'done', pod, previewUrl })}
         />

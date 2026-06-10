@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from 'dexie'
-import type { Fix, Parcel, PhotoType, PodStatus } from './types'
+import type { Driver, Fix, Parcel, PhotoType, PodStatus, Route } from './types'
 
 /** A capture as it sits in the local queue (§8): photo/signature blobs and
  *  all metadata land here FIRST — nothing blocks on the network. Synced items
@@ -19,6 +19,9 @@ export interface QueuedPod {
   destDistanceM: number | null
   photos: { type: PhotoType; blob: Blob; origKb: number; compressedKb: number }[]
   signature: Blob | null
+  /** Driver who made the capture — stamped onto pod_records.driver_id.
+   *  Optional so pre-allocation queued items still upload (fall back to demo). */
+  driverId?: string
   /** 0 = queued, 1 = synced (numbers — Dexie can't index booleans) */
   synced: 0 | 1
   /** Server-issued trust stamp, copied back after upload */
@@ -34,6 +37,10 @@ export const db = new Dexie('epod') as Dexie & {
    *  signal still shows the run sheet. The server stays the source of
    *  truth — every successful fetch replaces the cache. */
   parcels: EntityTable<Parcel, 'id'>
+  /** Read-through caches of the fleet, so the driver app can still filter to
+   *  a driver's run (and switch driver) on a cold offline start. */
+  routes: EntityTable<Route, 'id'>
+  drivers: EntityTable<Driver, 'id'>
 }
 
 db.version(1).stores({
@@ -43,4 +50,10 @@ db.version(1).stores({
 db.version(2).stores({
   pods: 'podId, synced, queuedAt',
   parcels: 'id',
+})
+db.version(3).stores({
+  pods: 'podId, synced, queuedAt',
+  parcels: 'id',
+  routes: 'id',
+  drivers: 'id',
 })

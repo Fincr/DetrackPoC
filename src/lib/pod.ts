@@ -22,6 +22,8 @@ export interface CaptureBundle {
   location: Fix | null
   destDistanceM: number | null
   signature: Blob | null
+  /** Driver making the capture (the selected run in the driver app). */
+  driverId: string
 }
 
 /** Deterministic storage path — retries always hit the same object. */
@@ -51,6 +53,7 @@ export async function queuePod(bundle: CaptureBundle): Promise<QueuedPod> {
     destDistanceM: bundle.destDistanceM,
     photos: bundle.photos.map((p) => ({ type: p.type, blob: p.blob, origKb: p.origKb, compressedKb: p.compressedKb })),
     signature: bundle.signature,
+    driverId: bundle.driverId,
     synced: 0,
     syncedAt: null,
     queuedAt: new Date().toISOString(),
@@ -106,7 +109,9 @@ export async function uploadPod(pod: QueuedPod): Promise<string | null> {
         gps_source: pod.location?.source ?? null, // null = no fix at capture
         dest_distance_m: pod.destDistanceM,
         signature_path: pod.signature ? signaturePath(pod.podId) : null,
-        driver_id: 'drv_demo',
+        // Pre-allocation queued items have no driverId — fall back to the demo
+        // driver so they still upload cleanly.
+        driver_id: pod.driverId ?? 'drv_demo',
       },
       { onConflict: 'id' },
     )

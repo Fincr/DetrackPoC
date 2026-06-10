@@ -5,7 +5,9 @@ import './index.css'
 import App from './App.tsx'
 import { supabaseConfigured } from './lib/supabase.ts'
 import { startSyncTriggers } from './lib/syncWorker.ts'
+import { AllocateScreen } from './screens/AllocateScreen.tsx'
 import { DispatcherScreen } from './screens/DispatcherScreen.tsx'
+import PodCaptureScreen from './components/PodCaptureScreen.tsx'
 
 // Service worker with an explicit update prompt — when a new build is
 // waiting, Root shows a toast instead of serving the stale version once.
@@ -33,10 +35,14 @@ function Root() {
       window.removeEventListener('sw-update-available', onUpdate)
     }
   }, [])
+  // Standalone single-file component demo — no backend needed
+  if (hash === '#/pod-demo') return <PodCaptureScreen />
   if (!supabaseConfigured) return <SetupNotice />
+  const dispatcher =
+    hash === '#/dispatch' ? <DispatcherScreen /> : hash === '#/allocate' ? <AllocateScreen /> : null
   return (
     <>
-      {hash === '#/dispatch' ? <DispatcherScreen /> : <App />}
+      {dispatcher ?? <App />}
       {updateReady && (
         <div className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-full border border-white/15 bg-navy-600 py-2 pl-4 pr-2 text-[13px] text-white shadow-2xl">
           A new version is available

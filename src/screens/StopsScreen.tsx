@@ -13,14 +13,18 @@ const STATUS_STYLES: Record<Parcel['status'], string> = {
 
 /** Driver home (§6.1): scan entry, the active run (rollovers first), then a
  *  separate Completed section. A job is "done" the moment it's captured —
- *  even while the record is still queued offline. */
+ *  even while the record is still queued offline. The run renders as a
+ *  responsive card grid that fills the page on a laptop and stacks on mobile. */
 export function StopsScreen({
   parcels,
   error,
+  routeLabel,
   onSelect,
 }: {
   parcels: Parcel[] | null
   error: string | null
+  /** The route(s) the signed-in driver runs — shown in the run-sheet header. */
+  routeLabel?: string
   onSelect: (parcel: Parcel, scannedValue?: string) => void
 }) {
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -46,7 +50,7 @@ export function StopsScreen({
   return (
     <>
       <TopBar
-        eyebrow="Citipost · Today's run"
+        eyebrow={routeLabel ? `Citipost · ${routeLabel}` : "Citipost · Today's run"}
         title="Today's stops"
         mono={
           parcels
@@ -55,94 +59,97 @@ export function StopsScreen({
         }
       />
 
-      <div className="px-[18px] pb-2 pt-4">
-        {/* The scan-to-attach path is the feature that matters most (§5) —
-            it gets the prominent slot. */}
-        <button
-          type="button"
-          onClick={() => setSheetOpen(true)}
-          className="flex w-full items-center justify-center gap-3 rounded-[13px] bg-navy p-[15px] font-serif text-base tracking-[0.3px] text-white transition active:translate-y-px"
-        >
-          <BarcodeGlyph />
-          Scan label
-        </button>
-      </div>
-
-      <div className="pb-5">
-        <p className="section-label mb-1 px-[18px] pt-2">Stops</p>
+      <div className="mx-auto w-full max-w-6xl px-4 py-5 lg:px-8 lg:py-7">
+        {/* The scan-to-attach path is the feature that matters most (§5) — it
+            sits as the primary action beside the section heading. */}
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="section-label">Stops</p>
+          <button
+            type="button"
+            onClick={() => setSheetOpen(true)}
+            className="flex w-full items-center justify-center gap-3 rounded-[13px] bg-navy px-6 py-[14px] font-serif text-base tracking-[0.3px] text-white transition hover:bg-navy-600 active:translate-y-px sm:w-auto"
+          >
+            <BarcodeGlyph />
+            Scan label
+          </button>
+        </div>
 
         {error && (
-          <div className="mx-[18px] my-2 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">
+          <div className="mb-3 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">
             Couldn't load parcels: {error}. Is the local Supabase stack running?
           </div>
         )}
         {!error && !parcels && (
-          <div className="px-[18px] py-6 text-center text-[13px] text-muted">Loading stops…</div>
+          <div className="py-10 text-center text-[13px] text-muted">Loading stops…</div>
         )}
         {parcels && active.length === 0 && (
-          <div className="px-[18px] py-6 text-center text-[13px] text-muted">
+          <div className="rounded-2xl border border-line bg-white py-10 text-center text-[13px] text-muted">
             All stops complete — nice work.
           </div>
         )}
 
-        {active.map((p, i) => {
-          const queuedFailed = queuedParcels.get(p.id) === 'failed'
-          // Attempt counter: server-confirmed attempts, +1 if one is queued
-          const attempts = p.attempts + (queuedFailed ? 1 : 0)
-          const note =
-            attempts > 0
-              ? `Attempt ${Math.min(attempts + 1, MAX_DELIVERY_ATTEMPTS)} of ${MAX_DELIVERY_ATTEMPTS}` +
-                (queuedFailed ? ' · failed attempt queued' : p.last_failure ? ` · last: ${p.last_failure}` : '')
-              : undefined
-          return (
-            <StopRow key={p.id} parcel={p} onSelect={onSelect} note={note}>
-              {isRollover(p) ? (
-                <span className="rounded-full border border-gold/50 bg-gold/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px] text-gold">
-                  Rollover · {dueLabel(p.due_date)}
-                </span>
-              ) : (
-                <span className="text-[11px] font-bold uppercase tracking-[0.6px] text-muted">
-                  Stop {i + 1}
-                </span>
-              )}
-            </StopRow>
-          )
-        })}
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {active.map((p, i) => {
+            const queuedFailed = queuedParcels.get(p.id) === 'failed'
+            // Attempt counter: server-confirmed attempts, +1 if one is queued
+            const attempts = p.attempts + (queuedFailed ? 1 : 0)
+            const note =
+              attempts > 0
+                ? `Attempt ${Math.min(attempts + 1, MAX_DELIVERY_ATTEMPTS)} of ${MAX_DELIVERY_ATTEMPTS}` +
+                  (queuedFailed ? ' · failed attempt queued' : p.last_failure ? ` · last: ${p.last_failure}` : '')
+                : undefined
+            return (
+              <StopRow key={p.id} parcel={p} onSelect={onSelect} note={note}>
+                {isRollover(p) ? (
+                  <span className="rounded-full border border-gold/50 bg-gold/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px] text-gold">
+                    Rollover · {dueLabel(p.due_date)}
+                  </span>
+                ) : (
+                  <span className="text-[11px] font-bold uppercase tracking-[0.6px] text-muted">
+                    Stop {i + 1}
+                  </span>
+                )}
+              </StopRow>
+            )
+          })}
+        </div>
 
         {completed.length > 0 && (
           <>
-            <p className="section-label mb-1 mt-5 px-[18px]">Completed</p>
-            {completed.map((p) => {
-              const queuedStatus = queuedParcels.get(p.id)
-              const status: PodStatus | Parcel['status'] = queuedStatus ?? p.status
-              return (
-                <StopRow
-                  key={p.id}
-                  parcel={p}
-                  onSelect={onSelect}
-                  dim
-                  note={p.status === 'returned' ? `Return to sender — ${p.attempts} failed attempts` : undefined}
-                >
-                  <span className="text-[11px] font-bold uppercase tracking-[0.6px]">
-                    <span className={STATUS_STYLES[status as Parcel['status']] ?? 'text-muted'}>
-                      {status === 'delivered' ? '✓ delivered' : status}
+            <p className="section-label mb-3 mt-8">Completed</p>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {completed.map((p) => {
+                const queuedStatus = queuedParcels.get(p.id)
+                const status: PodStatus | Parcel['status'] = queuedStatus ?? p.status
+                return (
+                  <StopRow
+                    key={p.id}
+                    parcel={p}
+                    onSelect={onSelect}
+                    dim
+                    note={p.status === 'returned' ? `Return to sender — ${p.attempts} failed attempts` : undefined}
+                  >
+                    <span className="text-[11px] font-bold uppercase tracking-[0.6px]">
+                      <span className={STATUS_STYLES[status as Parcel['status']] ?? 'text-muted'}>
+                        {status === 'delivered' ? '✓ delivered' : status}
+                      </span>
+                      {queuedStatus && <span className="text-gold"> · queued</span>}
                     </span>
-                    {queuedStatus && <span className="text-gold"> · queued</span>}
-                  </span>
-                </StopRow>
-              )
-            })}
+                  </StopRow>
+                )
+              })}
+            </div>
           </>
         )}
-      </div>
 
-      {/* Pinned footer: i2i brand mark + the dispatch handover — the white
-          bar is the one surface the full-colour logo sits on naturally */}
-      <div className="mt-auto flex items-center justify-between border-t border-line bg-white px-[18px] py-3 pb-[max(12px,env(safe-area-inset-bottom))]">
-        <img src="/i2i-logo.png" alt="Insight 2 Innovate · Citipost" className="h-7 w-auto" />
-        <a href="#/dispatch" className="text-xs font-semibold text-muted underline">
-          Dispatcher view
-        </a>
+        {/* Mobile-only brand + dispatch handover (the sidebar carries these on
+            laptop). The white bar is the surface the full-colour logo wants. */}
+        <div className="mt-8 flex items-center justify-between rounded-2xl border border-line bg-white px-[18px] py-3 lg:hidden">
+          <img src="/i2i-logo.png" alt="Insight 2 Innovate · Citipost" className="h-7 w-auto" />
+          <a href="#/dispatch" className="text-xs font-semibold text-muted underline">
+            Dispatcher view
+          </a>
+        </div>
       </div>
 
       {sheetOpen && parcels && (
@@ -162,7 +169,7 @@ export function StopsScreen({
 /** Scan sheet (§5): the camera scanner is the primary path into a capture —
  *  a decoded barcode auto-selects the matching parcel. Type-in stays as the
  *  manual fallback, and unknown values surface clearly instead of failing
- *  silently. */
+ *  silently. Rendered as a full-screen modal overlay. */
 function ScanSheet({
   parcels,
   onClose,
@@ -196,13 +203,12 @@ function ScanSheet({
   }
 
   return (
-    <div className="absolute inset-0 z-10 flex flex-col bg-navy/50" onClick={onClose}>
-      {/* Small backdrop sliver so it still reads as a sheet (tap to close);
-          the sheet itself fills the rest so the camera sits at the TOP of
-          the screen — visible while aiming, clear of mobile browser bars */}
-      <div className="h-12 flex-none" />
+    <div className="fixed inset-0 z-40 flex flex-col bg-navy/60 sm:items-center sm:justify-center" onClick={onClose}>
+      {/* Small backdrop sliver on mobile so the camera sits near the TOP of
+          the screen (visible while aiming); a centred dialog on laptop. */}
+      <div className="h-12 flex-none sm:hidden" />
       <div
-        className="flex-1 overflow-y-auto rounded-t-[22px] bg-paper p-[18px] pb-[max(24px,env(safe-area-inset-bottom))]"
+        className="flex-1 overflow-y-auto rounded-t-[22px] bg-paper p-[18px] pb-[max(24px,env(safe-area-inset-bottom))] sm:max-h-[88vh] sm:w-full sm:max-w-md sm:flex-none sm:rounded-[22px] sm:p-6 sm:shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <p className="section-label mb-2">Scan the label</p>
@@ -247,8 +253,8 @@ function ScanSheet({
   )
 }
 
-/** One stop in either section; the status slot comes in as children, an
- *  optional note line (attempt history etc.) renders under the address. */
+/** One stop as a card; the status slot comes in as children, an optional note
+ *  line (attempt history etc.) renders under the address. */
 function StopRow({
   parcel: p,
   onSelect,
@@ -266,18 +272,18 @@ function StopRow({
     <button
       type="button"
       onClick={() => onSelect(p)}
-      className={`block w-full border-b border-line bg-white px-[18px] py-3.5 text-left transition active:bg-paper ${dim ? 'opacity-75' : ''}`}
+      className={`flex h-full w-full flex-col rounded-2xl border border-line bg-white p-4 text-left transition hover:border-navy-500/40 hover:shadow-[0_6px_20px_-10px_rgba(16,25,46,.35)] active:translate-y-px ${dim ? 'opacity-70' : ''}`}
     >
-      <div className="flex items-baseline justify-between gap-3">
+      <div className="flex items-start justify-between gap-3">
         <div className="text-[15px] font-semibold">{p.recipient_name}</div>
-        {children}
+        <span className="flex-none">{children}</span>
       </div>
-      <div className="mt-0.5 text-[13px] leading-[1.45] text-muted">
+      <div className="mt-1 text-[13px] leading-[1.45] text-muted">
         {p.address_line}
         {p.postcode ? `, ${p.postcode}` : ''}
       </div>
       {note && <div className="mt-1 text-[11.5px] font-semibold text-fail">{note}</div>}
-      <div className="mt-1.5 flex items-center justify-between">
+      <div className="mt-auto flex items-center justify-between pt-3">
         <span className="font-mono text-[11px] tracking-[1px] text-navy-500">{p.tracking_number}</span>
         <span className="text-[10px] font-bold uppercase tracking-[0.6px] text-gold">{p.area}</span>
       </div>

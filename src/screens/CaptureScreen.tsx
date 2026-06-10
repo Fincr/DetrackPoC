@@ -29,20 +29,24 @@ const NO_FIX_NOTES: Record<NoFixReason, string> = {
     'The device returned no GPS fix — check location services are switched on, then retry.',
 }
 
-/** Capture screen (§6.2): the full §5 evidence bundle, one-handed. Photos are
- *  stamped + compressed on capture; GPS is real-or-nothing (no simulated
- *  fix — a capture without one records none and says so); signature is
- *  optional. Completion writes to the local queue (§8) and returns
- *  instantly — the sync worker uploads in the background. */
+/** Capture screen (§6.2): the full §5 evidence bundle. Photos are stamped +
+ *  compressed on capture; GPS is real-or-nothing (no simulated fix — a
+ *  capture without one records none and says so); signature is optional.
+ *  Completion writes to the local queue (§8) and returns instantly — the sync
+ *  worker uploads in the background. Two columns on laptop (evidence | form),
+ *  a single flow on mobile. */
 export function CaptureScreen({
   parcel,
   trackingScanned,
+  driverId,
   eyebrow,
   onComplete,
   onBack,
 }: {
   parcel: Parcel
   trackingScanned: string
+  /** The signed-in driver — stamped onto the POD record. */
+  driverId: string
   /** e.g. "Stop 2 of 7 · Domestic" or "Rollover · Domestic" */
   eyebrow: string
   onComplete: (pod: QueuedPod, previewUrl: string) => void
@@ -132,6 +136,7 @@ export function CaptureScreen({
         location: gpsFix,
         destDistanceM: destination && gpsFix ? Math.round(haversineM(gpsFix, destination)) : null,
         signature,
+        driverId,
       })
       void syncNow() // fire-and-forget — drains now if we happen to be online
       onComplete(pod, labelPhoto.url)
@@ -142,6 +147,8 @@ export function CaptureScreen({
     }
   }
 
+  const shownFix = usedFix !== undefined ? usedFix : fix
+
   return (
     <>
       <TopBar
@@ -151,183 +158,190 @@ export function CaptureScreen({
         onBack={onBack}
       />
 
-      <div className="border-b border-line bg-white px-[18px] py-3.5">
-        <div className="text-[15px] font-semibold">{parcel.recipient_name}</div>
-        <div className="mt-0.5 text-[13px] leading-[1.45] text-muted">
-          {parcel.address_line}
-          {parcel.postcode ? `, ${parcel.postcode}` : ''}
-        </div>
-      </div>
-
-      <div className="px-[18px] pb-5 pt-4">
-        <p className="section-label mb-[9px]">Capture label</p>
-        <PhotoZone
-          photo={labelPhoto}
-          prompt="Tap to photograph the label"
-          sub="Timestamp + GPS are burned into the image"
-          onPhoto={(f) => void takePhoto(f, 'label')}
-          onRetake={() => {
-            setLabelPhoto(null)
-            setUsedFix(undefined) // chip tracks the live fix again until re-shot
-          }}
-        />
-
-        <div className="mt-3">
-          <PhotoZone
-            photo={wherePhoto}
-            prompt="Add photo of where it was left"
-            sub="Optional"
-            compact
-            onPhoto={(f) => void takePhoto(f, 'where_left')}
-            onRetake={() => setWherePhoto(null)}
-          />
+      <div className="mx-auto w-full max-w-5xl px-4 py-5 lg:px-8 lg:py-7">
+        <div className="mb-5 rounded-2xl border border-line bg-white px-4 py-3.5">
+          <div className="text-[15px] font-semibold">{parcel.recipient_name}</div>
+          <div className="mt-0.5 text-[13px] leading-[1.45] text-muted">
+            {parcel.address_line}
+            {parcel.postcode ? `, ${parcel.postcode}` : ''}
+          </div>
         </div>
 
-        <div className="mt-3 grid grid-cols-2 gap-[9px]">
-          <Chip
-            k="Timestamp"
-            v={capturedAt?.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) ?? '—'}
-            pending={!capturedAt}
-          />
-          {/* Shows the fix that will go on the record: the fix burned into
-              the label photo once one is taken, otherwise the live device
-              fix. Real-or-nothing — "no fix" renders red, never a
-              fabricated point. */}
-          {(() => {
-            const shown = usedFix !== undefined ? usedFix : fix
-            const pending = usedFix === undefined && acquiring
-            return (
-              <Chip
-                k={shown?.source === 'photo_exif' ? 'GPS location (from photo)' : 'GPS location'}
-                v={
-                  shown
-                    ? `${shown.lat.toFixed(5)}, ${shown.lng.toFixed(5)}`
-                    : pending
-                      ? 'acquiring…'
-                      : usedFix === null
-                        ? 'not recorded'
-                        : 'no fix'
-                }
-                pending={pending}
-                fail={!shown && !pending}
+        <div className="lg:grid lg:grid-cols-2 lg:items-start lg:gap-8">
+          {/* Evidence: photos + provenance chips */}
+          <div>
+            <p className="section-label mb-[9px]">Capture label</p>
+            <PhotoZone
+              photo={labelPhoto}
+              prompt="Tap to photograph the label"
+              sub="Timestamp + GPS are burned into the image"
+              onPhoto={(f) => void takePhoto(f, 'label')}
+              onRetake={() => {
+                setLabelPhoto(null)
+                setUsedFix(undefined) // chip tracks the live fix again until re-shot
+              }}
+            />
+
+            <div className="mt-3">
+              <PhotoZone
+                photo={wherePhoto}
+                prompt="Add photo of where it was left"
+                sub="Optional"
+                compact
+                onPhoto={(f) => void takePhoto(f, 'where_left')}
+                onRetake={() => setWherePhoto(null)}
               />
-            )
-          })()}
-          {/* Geofence chip: how far the current fix is from where the parcel
-              should be going — green near, gold/red the further off it is */}
-          {(() => {
-            const shown = usedFix !== undefined ? usedFix : fix
-            const dist = shown && destination ? haversineM(shown, destination) : null
-            return (
-              <div className="col-span-2 rounded-[11px] border border-line bg-white px-[11px] py-[9px]">
-                <div className="text-[10px] font-bold uppercase tracking-[0.6px] text-muted">
-                  Distance from address
-                </div>
-                <div
-                  className={`mt-[3px] text-[13px] font-semibold tabular-nums ${
-                    dist == null
-                      ? 'font-medium text-muted'
-                      : dist <= 250
-                        ? 'text-ok'
-                        : dist <= 1000
-                          ? 'text-gold'
-                          : 'text-fail'
-                  }`}
-                >
-                  {dist == null ? '—' : fmtDistance(dist)}
-                </div>
-              </div>
-            )
-          })()}
-        </div>
+            </div>
 
-        {/* Why there's no fix — a blocked permission shouldn't fail silently
-            when the whole point is proving where the driver stood */}
-        {(usedFix !== undefined ? usedFix : fix) == null && noFixReason && (
-          <div className="mt-2 flex items-start justify-between gap-3 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2 text-[12px] leading-[1.45] text-fail">
-            <span>{NO_FIX_NOTES[noFixReason]}</span>
-            <button type="button" onClick={retry} className="flex-none font-semibold underline">
-              Retry
+            <div className="mt-3 grid grid-cols-2 gap-[9px]">
+              <Chip
+                k="Timestamp"
+                v={capturedAt?.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) ?? '—'}
+                pending={!capturedAt}
+              />
+              {/* Shows the fix that will go on the record: the fix burned into
+                  the label photo once one is taken, otherwise the live device
+                  fix. Real-or-nothing — "no fix" renders red, never a
+                  fabricated point. */}
+              {(() => {
+                const shown = shownFix
+                const pending = usedFix === undefined && acquiring
+                return (
+                  <Chip
+                    k={shown?.source === 'photo_exif' ? 'GPS location (from photo)' : 'GPS location'}
+                    v={
+                      shown
+                        ? `${shown.lat.toFixed(5)}, ${shown.lng.toFixed(5)}`
+                        : pending
+                          ? 'acquiring…'
+                          : usedFix === null
+                            ? 'not recorded'
+                            : 'no fix'
+                    }
+                    pending={pending}
+                    fail={!shown && !pending}
+                  />
+                )
+              })()}
+              {/* Geofence chip: how far the current fix is from where the parcel
+                  should be going — green near, gold/red the further off it is */}
+              {(() => {
+                const dist = shownFix && destination ? haversineM(shownFix, destination) : null
+                return (
+                  <div className="col-span-2 rounded-[11px] border border-line bg-white px-[11px] py-[9px]">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.6px] text-muted">
+                      Distance from address
+                    </div>
+                    <div
+                      className={`mt-[3px] text-[13px] font-semibold tabular-nums ${
+                        dist == null
+                          ? 'font-medium text-muted'
+                          : dist <= 250
+                            ? 'text-ok'
+                            : dist <= 1000
+                              ? 'text-gold'
+                              : 'text-fail'
+                      }`}
+                    >
+                      {dist == null ? '—' : fmtDistance(dist)}
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+
+            {/* Why there's no fix — a blocked permission shouldn't fail silently
+                when the whole point is proving where the driver stood */}
+            {shownFix == null && noFixReason && (
+              <div className="mt-2 flex items-start justify-between gap-3 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2 text-[12px] leading-[1.45] text-fail">
+                <span>{NO_FIX_NOTES[noFixReason]}</span>
+                <button type="button" onClick={retry} className="flex-none font-semibold underline">
+                  Retry
+                </button>
+              </div>
+            )}
+
+            {/* GPS recovered after a fix-less photo: the record honours the
+                stamp, so the only way to get the position on it is a re-shoot */}
+            {usedFix === null && fix && (
+              <div className="mt-2 rounded-[11px] border border-gold/40 bg-gold/10 px-3 py-2 text-[12px] leading-[1.45] text-[#8a6d1a]">
+                GPS is working now, but the label photo was taken without a fix — tap{' '}
+                <span className="font-semibold">Retake</span> to record your position.
+              </div>
+            )}
+          </div>
+
+          {/* Outcome: recipient, delivered/failed, signature, completion */}
+          <div className="mt-6 lg:mt-0">
+            <Field label="Received by">
+              <input
+                value={receivedBy}
+                onChange={(e) => setReceivedBy(e.target.value)}
+                placeholder={'Name, or "left in porch"'}
+                className={INPUT_CLASS}
+              />
+            </Field>
+
+            <Field label="Outcome">
+              <div className="flex gap-2">
+                <SegButton active={outcome === 'delivered'} colour="ok" onClick={() => setOutcome('delivered')}>
+                  Delivered
+                </SegButton>
+                <SegButton active={outcome === 'failed'} colour="fail" onClick={() => setOutcome('failed')}>
+                  Failed
+                </SegButton>
+              </div>
+            </Field>
+
+            {outcome === 'failed' && (
+              <Field label="Failure reason (required)">
+                <select
+                  value={failurePreset}
+                  onChange={(e) => setFailurePreset(e.target.value)}
+                  className={INPUT_CLASS}
+                >
+                  <option value="" disabled>
+                    Select a reason…
+                  </option>
+                  {FAILURE_PRESETS.map((r) => (
+                    <option key={r}>{r}</option>
+                  ))}
+                </select>
+                {failurePreset === 'Other…' && (
+                  <input
+                    value={failureOther}
+                    onChange={(e) => setFailureOther(e.target.value)}
+                    placeholder="Describe the failure"
+                    className={`${INPUT_CLASS} mt-2`}
+                  />
+                )}
+              </Field>
+            )}
+
+            <Field label="Signature (optional)">
+              <SignatureBox handleRef={sigRef} />
+            </Field>
+
+            {error && (
+              <div className="mt-3.5 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">
+                {error}
+              </div>
+            )}
+
+            <button
+              type="button"
+              disabled={!canComplete}
+              onClick={complete}
+              className="relative mt-[18px] w-full overflow-hidden rounded-[13px] bg-navy p-[15px] font-serif text-base tracking-[0.3px] text-white transition hover:bg-navy-600 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {submitting ? 'Saving…' : 'Complete delivery'}
+              <span
+                ref={barRef}
+                className="absolute bottom-0 left-0 h-[3px] w-0 bg-gold transition-[width] duration-200"
+              />
             </button>
           </div>
-        )}
-
-        {/* GPS recovered after a fix-less photo: the record honours the
-            stamp, so the only way to get the position on it is a re-shoot */}
-        {usedFix === null && fix && (
-          <div className="mt-2 rounded-[11px] border border-gold/40 bg-gold/10 px-3 py-2 text-[12px] leading-[1.45] text-[#8a6d1a]">
-            GPS is working now, but the label photo was taken without a fix — tap{' '}
-            <span className="font-semibold">Retake</span> to record your position.
-          </div>
-        )}
-
-        <Field label="Received by">
-          <input
-            value={receivedBy}
-            onChange={(e) => setReceivedBy(e.target.value)}
-            placeholder={'Name, or "left in porch"'}
-            className={INPUT_CLASS}
-          />
-        </Field>
-
-        <Field label="Outcome">
-          <div className="flex gap-2">
-            <SegButton active={outcome === 'delivered'} colour="ok" onClick={() => setOutcome('delivered')}>
-              Delivered
-            </SegButton>
-            <SegButton active={outcome === 'failed'} colour="fail" onClick={() => setOutcome('failed')}>
-              Failed
-            </SegButton>
-          </div>
-        </Field>
-
-        {outcome === 'failed' && (
-          <Field label="Failure reason (required)">
-            <select
-              value={failurePreset}
-              onChange={(e) => setFailurePreset(e.target.value)}
-              className={INPUT_CLASS}
-            >
-              <option value="" disabled>
-                Select a reason…
-              </option>
-              {FAILURE_PRESETS.map((r) => (
-                <option key={r}>{r}</option>
-              ))}
-            </select>
-            {failurePreset === 'Other…' && (
-              <input
-                value={failureOther}
-                onChange={(e) => setFailureOther(e.target.value)}
-                placeholder="Describe the failure"
-                className={`${INPUT_CLASS} mt-2`}
-              />
-            )}
-          </Field>
-        )}
-
-        <Field label="Signature (optional)">
-          <SignatureBox handleRef={sigRef} />
-        </Field>
-
-        {error && (
-          <div className="mt-3.5 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">
-            {error}
-          </div>
-        )}
-
-        <button
-          type="button"
-          disabled={!canComplete}
-          onClick={complete}
-          className="relative mt-[18px] w-full overflow-hidden rounded-[13px] bg-navy p-[15px] font-serif text-base tracking-[0.3px] text-white transition active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {submitting ? 'Saving…' : 'Complete delivery'}
-          <span
-            ref={barRef}
-            className="absolute bottom-0 left-0 h-[3px] w-0 bg-gold transition-[width] duration-200"
-          />
-        </button>
+        </div>
       </div>
     </>
   )
@@ -419,7 +433,7 @@ function Chip({ k, v, pending = false, fail = false }: { k: string; v: string; p
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="mt-3.5">
+    <div className="mt-3.5 first:mt-0">
       <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[1.4px] text-muted">
         {label}
       </label>

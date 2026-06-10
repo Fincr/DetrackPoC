@@ -7,6 +7,24 @@
 
 create extension if not exists postgis;
 
+-- Drivers & routes (allocation model): a ROUTE is a driver's run for the day;
+-- parcels are allocated to a route, and each route is run by one driver.
+-- driver_id is text to match pod_records.driver_id (default 'drv_demo').
+create table drivers (
+  id         text primary key,
+  name       text not null,
+  created_at timestamptz default now()
+);
+
+create table routes (
+  id         uuid primary key default gen_random_uuid(),
+  name       text not null unique,
+  driver_id  text references drivers(id),
+  -- Areas this route covers — powers the dispatcher's "auto-allocate by area".
+  areas      text[] not null default '{}',
+  created_at timestamptz default now()
+);
+
 -- The parcels / jobs a driver is delivering today
 create table parcels (
   id              uuid primary key default gen_random_uuid(),
@@ -26,8 +44,13 @@ create table parcels (
   due_date        date not null default current_date,
   attempts        int not null default 0,    -- failed delivery attempts so far
   last_failure    text,                      -- reason of the most recent failed attempt
+  -- Allocation link. null = unallocated: in the dispatcher's to-do list,
+  -- hidden from every driver's run until assigned.
+  route_id        uuid references routes(id),
   created_at      timestamptz default now()
 );
+
+create index parcels_route_idx on parcels(route_id);
 
 -- One proof-of-delivery record per delivery attempt
 create table pod_records (
@@ -88,6 +111,18 @@ create policy "pod evidence upload"
   on storage.objects for insert
   with check (bucket_id = 'pod-evidence');
 
+-- Demo fleet: 3 drivers each running one route. drv_demo = the
+-- design-reference driver, kept as the app's default identity.
+insert into drivers (id, name) values
+  ('drv_demo',  'Sam Okafor'),
+  ('drv_priya', 'Priya Nair'),
+  ('drv_dan',   'Dan Whitlock');
+
+insert into routes (name, driver_id, areas) values
+  ('Greater London',     'drv_demo',  array['Domestic']),
+  ('International & Air', 'drv_priya', array['International']),
+  ('Fulfilment & Sort',  'drv_dan',   array['Fulfilment', 'Sortation']);
+
 -- Demo dataset: 8 parcels across the four areas, realistic UK addresses,
 -- unique tracking numbers (also listed in README.md for type-in scanning).
 -- Parcel 1 is the exact parcel shown in design-reference.html.
@@ -121,9 +156,27 @@ insert into parcels (tracking_number, recipient_name, address_line, postcode, de
 -- on first load (mirrors supabase/seed.sql).
 update parcels set due_date = current_date - 1 where tracking_number = 'CP-100003-GB';
 
+-- Allocate by area, but leave two parcels unallocated (one Domestic, one
+-- Fulfilment) so the dispatcher can demo manual + auto allocation.
+update parcels p set route_id = r.id
+  from routes r
+  where p.area = any (r.areas)
+    and p.tracking_number not in ('CP-100002-GB', 'CP-300007-GB');
+
 -- Hosted-project gotcha: if RLS got enabled on these tables (dashboard
 -- prompts encourage it), the anon key reads 0 rows and writes are rejected.
 -- The PoC posture is RLS OFF (no auth, demo only) - enforce it explicitly:
+alter table drivers     disable row level security;
+alter table routes      disable row level security;
 alter table parcels     disable row level security;
 alter table pod_records disable row level security;
 alter table pod_photos  disable row level security;
+
+-- Realtime: the dispatcher subscribes to pod_records; the driver app and the
+-- allocation view subscribe to parcels so allocations appear live.
+do $$ begin
+  alter publication supabase_realtime add table pod_records;
+exception when duplicate_object then null; when undefined_object then null; end $$;
+do $$ begin
+  alter publication supabase_realtime add table parcels;
+exception when duplicate_object then null; when undefined_object then null; end $$;

@@ -23,6 +23,22 @@ export interface Fix {
   source: 'photo_exif' | 'device'
 }
 
+/** A delivery driver. id is text (e.g. 'drv_demo') — the value stamped onto
+ *  pod_records.driver_id. */
+export interface Driver {
+  id: string
+  name: string
+}
+
+/** A route is one driver's run. Parcels are allocated to a route; `areas` is
+ *  the set of parcel areas this route covers, which drives auto-allocation. */
+export interface Route {
+  id: string
+  name: string
+  driver_id: string | null
+  areas: Area[]
+}
+
 export interface Parcel {
   id: string
   tracking_number: string
@@ -38,6 +54,8 @@ export interface Parcel {
   /** Failed delivery attempts so far (see MAX_DELIVERY_ATTEMPTS) */
   attempts: number
   last_failure: string | null
+  /** Route this parcel is allocated to. null = unallocated (dispatcher to-do). */
+  route_id: string | null
   created_at: string
 }
 

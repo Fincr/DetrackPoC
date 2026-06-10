@@ -1,5 +1,6 @@
-/** Navy top bar (§7): gold uppercase eyebrow, Georgia-serif title, optional
- *  mono barcode line, gold-to-transparent underline. */
+/** Light page header (§7 brand accents on a web-app surface): gold uppercase
+ *  eyebrow, Georgia-serif title, optional mono barcode line. The brand navy
+ *  now lives in the global app bar, so this reads as a page heading. */
 export function TopBar({
   eyebrow,
   title,
@@ -12,23 +13,22 @@ export function TopBar({
   onBack?: () => void
 }) {
   return (
-    // max() keeps the bar clear of notches/status bars when installed as a PWA
-    <div className="gold-underline relative bg-navy px-[18px] pb-4 pt-[max(14px,env(safe-area-inset-top))] text-white">
+    <div className="relative border-b border-line bg-white px-[18px] py-4 lg:px-8">
       {onBack && (
         <button
           type="button"
           onClick={onBack}
-          className="mb-1 block text-[11px] font-semibold text-[#9fb0d6]"
+          className="mb-1.5 block text-[11px] font-semibold text-navy-500"
         >
           ‹ Today's stops
         </button>
       )}
-      <div className="text-[10.5px] font-semibold uppercase tracking-[2px] text-gold-soft">
+      <div className="text-[10.5px] font-semibold uppercase tracking-[2px] text-gold">
         {eyebrow}
       </div>
-      <div className="mt-[3px] font-serif text-lg">{title}</div>
+      <div className="mt-[3px] font-serif text-xl text-ink">{title}</div>
       {mono && (
-        <div className="mt-[5px] font-mono text-xs tracking-[1px] text-[#9fb0d6]">{mono}</div>
+        <div className="mt-[5px] font-mono text-xs tracking-[1px] text-muted">{mono}</div>
       )}
     </div>
   )

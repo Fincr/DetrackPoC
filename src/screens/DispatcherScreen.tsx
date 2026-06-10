@@ -63,6 +63,18 @@ export function DispatcherScreen() {
               {pods ? `${pods.length} record${pods.length === 1 ? '' : 's'}` : '…'}
             </span>
           </div>
+          {/* Dispatch tabs */}
+          <div className="mt-3 flex gap-2">
+            <a
+              href="#/allocate"
+              className="rounded-full px-3 py-1 text-[12px] font-semibold text-[#9fb0d6] transition hover:bg-white/5"
+            >
+              Allocate
+            </a>
+            <span className="rounded-full bg-white/10 px-3 py-1 text-[12px] font-semibold text-white">
+              Captured PODs
+            </span>
+          </div>
         </header>
 
         <div className="min-h-[calc(100dvh-110px)] bg-paper p-4 sm:min-h-0 sm:rounded-b-2xl sm:p-5">

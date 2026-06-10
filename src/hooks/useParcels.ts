@@ -46,8 +46,15 @@ export function useParcels() {
     })
     // …then the network
     void reload()
+    // Realtime: pick up dispatcher allocations (route_id changes) and status
+    // moves the instant they happen, so the run sheet stays live without a poll.
+    const channel = supabase
+      .channel('parcels-feed')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parcels' }, () => void reload())
+      .subscribe()
     return () => {
       live = false
+      void supabase.removeChannel(channel)
     }
   }, [reload])
 
