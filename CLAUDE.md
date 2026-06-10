@@ -56,9 +56,21 @@ Routing:  main.tsx hash router gated by useSession (LoginScreen when signed
 - **Poison items:** after `MAX_AUTO_ATTEMPTS` (5) failures an item is
   "stuck" — skipped by automatic passes (never blocks the queue), retried by
   a manual badge tap (`syncNow({includeStuck:true})`).
-- **Attempt model:** delivered = terminal; failed keeps the parcel `pending`
-  (re-attempt, rolls over) with `parcels.attempts`/`last_failure` updated at
-  sync; at `MAX_DELIVERY_ATTEMPTS` (3) → terminal `'returned'`.
+- **Lifecycle (2026-06-10):** `parcels.status` IS the lifecycle:
+  `awaiting_collection → collected → at_warehouse → delivered` (+ terminal
+  `returned`). Each forward step is a scan event in `parcel_events`
+  (client-UUID pk = idempotency key, stage, captured_at device clock,
+  synced_at server default, location/accuracy/source, driver_id).
+  Collection/warehouse = QUICK scans (no photo) via the scan sheet's stage
+  switch, queued in Dexie `events` (v4) and drained by the same sync worker;
+  delivery = the full POD capture, whose sync also upserts a `delivered`
+  event (id = podId). Ordering is warn-but-allow: events record as scanned,
+  but status only ever advances forward (`STATUS_RANK` guard in
+  `events.ts`), so late syncs can't regress a parcel.
+- **Attempt model:** delivered = terminal; failed keeps the parcel at its
+  current lifecycle stage (re-attempt, rolls over) with
+  `parcels.attempts`/`last_failure` updated at sync; at
+  `MAX_DELIVERY_ATTEMPTS` (3) → terminal `'returned'`.
 - **Geofence:** haversine (geo.ts) between the capture fix and
   `parcels.destination` at capture → `pod_records.dest_distance_m`;
   thresholds 250 m ok / 1 km warn used in capture chip, receipt, dispatcher.

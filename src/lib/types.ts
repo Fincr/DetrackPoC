@@ -1,9 +1,67 @@
 // Row shapes mirroring the §4 schema (hand-written — a PoC doesn't need codegen).
 
-export type Area = 'Domestic' | 'International' | 'Fulfilment' | 'Sortation'
-export type ParcelStatus = 'pending' | 'delivered' | 'failed' | 'returned'
+/** Delivery region in England — also the name of the route that runs it. */
+export type Area = 'Greater London' | 'South East' | 'North West'
+
+/** Parcel lifecycle position. Each step forward is a SCAN EVENT (timestamp +
+ *  GPS + driver): a quick scan for collection/warehouse, the full POD capture
+ *  for delivery. 'returned' is the failed-attempts terminal. */
+export type ParcelStatus =
+  | 'awaiting_collection'
+  | 'collected'
+  | 'at_warehouse'
+  | 'delivered'
+  | 'returned'
 export type PodStatus = 'delivered' | 'failed'
 export type PhotoType = 'label' | 'where_left'
+
+/** The three lifecycle scan stages, in order. */
+export type Stage = 'collection' | 'warehouse' | 'delivered'
+export const STAGES: Stage[] = ['collection', 'warehouse', 'delivered']
+
+/** The status a parcel lands on after a given stage scan. */
+export const STAGE_STATUS: Record<Stage, ParcelStatus> = {
+  collection: 'collected',
+  warehouse: 'at_warehouse',
+  delivered: 'delivered',
+}
+
+/** Lifecycle order — status only ever advances FORWARD (a late-syncing
+ *  collection scan must never regress a delivered parcel). */
+export const STATUS_RANK: Record<ParcelStatus, number> = {
+  awaiting_collection: 0,
+  collected: 1,
+  at_warehouse: 2,
+  delivered: 3,
+  returned: 3,
+}
+
+export const STATUS_LABEL: Record<ParcelStatus, string> = {
+  awaiting_collection: 'Awaiting collection',
+  collected: 'Collected',
+  at_warehouse: 'At warehouse',
+  delivered: 'Delivered',
+  returned: 'Returned',
+}
+
+export const STAGE_LABEL: Record<Stage, string> = {
+  collection: 'Collection',
+  warehouse: 'Warehouse',
+  delivered: 'Delivery',
+}
+
+/** The stage a parcel is expecting next — drives the warn-but-allow check
+ *  when the scanned stage doesn't match. */
+export function expectedStage(status: ParcelStatus): Stage {
+  if (status === 'awaiting_collection') return 'collection'
+  if (status === 'collected') return 'warehouse'
+  return 'delivered'
+}
+
+/** Terminal = off the active run (delivered, or returned to sender). */
+export function isTerminal(status: ParcelStatus): boolean {
+  return status === 'delivered' || status === 'returned'
+}
 
 /** A failed delivery is an attempt; the parcel goes terminal ('returned')
  *  after this many failures. */
@@ -88,9 +146,25 @@ export interface Parcel {
   created_at: string
 }
 
-/** Rollover rule: still pending after its run date (derived, no nightly job). */
+/** Rollover rule: still undelivered after its run date (derived, no nightly job). */
 export function isRollover(p: Parcel, today = new Date()): boolean {
-  return p.status === 'pending' && p.due_date < today.toISOString().slice(0, 10)
+  return !isTerminal(p.status) && p.due_date < today.toISOString().slice(0, 10)
+}
+
+/** One lifecycle scan event (collection / warehouse / delivered) — the
+ *  timestamped, GPS-located audit trail behind parcels.status. */
+export interface ParcelEvent {
+  id: string
+  parcel_id: string | null
+  tracking_scanned: string
+  stage: Stage
+  captured_at: string
+  synced_at: string | null
+  location: GeoPoint | string | null
+  gps_accuracy_m: number | null
+  gps_source: GpsSource | null
+  driver_id: string | null
+  created_at: string
 }
 
 export interface PodRecord {

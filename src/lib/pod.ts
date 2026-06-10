@@ -185,16 +185,34 @@ export async function uploadPod(pod: QueuedPod): Promise<string | null> {
     if (phErr) throw new Error(`photo metadata insert failed: ${phErr.message}`)
   }
 
-  // 4. Reflect the outcome on the server-side stop list.
-  //    Delivered is terminal. Failed is an ATTEMPT: the parcel stays pending
-  //    (so it re-appears and rolls over) until MAX_DELIVERY_ATTEMPTS, then
-  //    goes terminal as 'returned'. Read-modify-write is acceptable for a
-  //    single-driver PoC; production would use an RPC/transaction.
+  // 4. Reflect the outcome on the server-side stop list (lifecycle model).
+  //    Delivered is terminal — and also a lifecycle stage, so a 'delivered'
+  //    parcel_events row (id = the pod's id, idempotent) completes the
+  //    scan-event timeline alongside the POD. Failed is an ATTEMPT: the
+  //    parcel KEEPS its current lifecycle stage (so it re-appears and rolls
+  //    over) until MAX_DELIVERY_ATTEMPTS, then goes terminal as 'returned'.
+  //    Read-modify-write is acceptable for a single-driver PoC; production
+  //    would use an RPC/transaction.
   if (pod.parcelId) {
     // completed_at stamps when the stop went terminal, so the run sheet can
     // show only stops finished today (older ones drop off, but stay in the DB).
     const completedAt = new Date().toISOString()
     if (pod.status === 'delivered') {
+      const { error: evErr } = await supabase.from('parcel_events').upsert(
+        {
+          id: pod.podId, // same UUID as the POD — retries hit the same row
+          parcel_id: pod.parcelId,
+          tracking_scanned: pod.trackingScanned,
+          stage: 'delivered',
+          captured_at: pod.capturedAt,
+          location: pod.location ? `POINT(${pod.location.lng} ${pod.location.lat})` : null,
+          gps_accuracy_m: pod.location?.accuracyM ?? null,
+          gps_source: pod.location?.source ?? null,
+          driver_id: pod.driverId,
+        },
+        { onConflict: 'id' },
+      )
+      if (evErr) throw new Error(`delivered event insert failed: ${evErr.message}`)
       await supabase
         .from('parcels')
         .update({ status: 'delivered', completed_at: completedAt })
@@ -212,9 +230,10 @@ export async function uploadPod(pod: QueuedPod): Promise<string | null> {
         .update({
           attempts,
           last_failure: pod.failureReason,
-          status: terminal ? 'returned' : 'pending',
-          // Re-attempts stay pending → no completion time until it goes terminal
-          completed_at: terminal ? completedAt : null,
+          // A failed attempt doesn't move the lifecycle — the parcel stays at
+          // its current stage (collected / at_warehouse) until it goes
+          // terminal as a return.
+          ...(terminal ? { status: 'returned', completed_at: completedAt } : { completed_at: null }),
         })
         .eq('id', pod.parcelId)
     }

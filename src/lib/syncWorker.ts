@@ -1,4 +1,5 @@
 import { db } from './db'
+import { uploadEvent } from './events'
 import { uploadPod } from './pod'
 import { emitSync } from './syncEvents'
 
@@ -21,15 +22,40 @@ export async function syncNow(opts: { includeStuck?: boolean } = {}): Promise<vo
   // only one pass runs at a time.
   if (syncing || !navigator.onLine) return
 
-  const queued = (await db.pods.where('synced').equals(0).sortBy('queuedAt')).filter(
+  // Both queues drain oldest-first: stage scans (quick, no blobs) then PODs.
+  // Order between the two doesn't matter for correctness — parcels.status
+  // only ever advances forward, so a delivered POD syncing before its
+  // collection scan can't be regressed by it.
+  const queuedEvents = (await db.events.where('synced').equals(0).sortBy('queuedAt')).filter(
+    (ev) => opts.includeStuck || ev.attempts < MAX_AUTO_ATTEMPTS,
+  )
+  const queuedPods = (await db.pods.where('synced').equals(0).sortBy('queuedAt')).filter(
     (pod) => opts.includeStuck || pod.attempts < MAX_AUTO_ATTEMPTS,
   )
-  if (!queued.length) return
+  if (!queuedEvents.length && !queuedPods.length) return
 
   syncing = true
   emitSync()
   try {
-    for (const pod of queued) {
+    for (const event of queuedEvents) {
+      try {
+        const syncedAt = await uploadEvent(event)
+        await db.events.update(event.eventId, {
+          synced: 1,
+          syncedAt: syncedAt ?? new Date().toISOString(),
+          lastError: null,
+        })
+      } catch (e) {
+        await db.events.update(event.eventId, {
+          attempts: event.attempts + 1,
+          lastError: e instanceof Error ? e.message : String(e),
+        })
+        if (!navigator.onLine) break
+      } finally {
+        emitSync()
+      }
+    }
+    for (const pod of queuedPods) {
       try {
         const syncedAt = await uploadPod(pod)
         // Flip the flag, keep the item — the UI shows synced history (§8)

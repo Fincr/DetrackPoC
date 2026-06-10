@@ -11,7 +11,7 @@ import {
 } from '../lib/manifest'
 import { supabase } from '../lib/supabase'
 import { buildTrackingCsv, downloadCsv, type TrackingPod } from '../lib/trackingExport'
-import type { Manifest } from '../lib/types'
+import { STATUS_LABEL, STATUS_RANK, type Manifest, type ParcelStatus } from '../lib/types'
 
 /** The parcel fields the Jobs view needs (a subset of the full row). */
 interface JobParcel {
@@ -656,7 +656,7 @@ function JobParcels({
                 ) : (
                   <span className="text-[11px] font-bold uppercase tracking-[0.6px] text-muted">Unallocated</span>
                 )}
-                <div className="text-[11px] text-muted">{statusLabel(p.status)}</div>
+                <StageBadge status={p.status} />
               </div>
             </label>
           )
@@ -666,11 +666,33 @@ function JobParcels({
   )
 }
 
-function statusLabel(status: string): string {
-  if (status === 'delivered') return '✓ delivered'
-  if (status === 'returned') return 'returned'
-  if (status === 'failed') return 'failed'
-  return 'pending'
+/** Lifecycle position of one parcel: three step-dots (collected → warehouse
+ *  → delivered) plus the status label — "what stage is it on the job". */
+function StageBadge({ status }: { status: string }) {
+  const s = status as ParcelStatus
+  const rank = STATUS_RANK[s] ?? 0
+  const returned = s === 'returned'
+  return (
+    <span className="mt-0.5 flex items-center justify-end gap-1.5">
+      <span className="flex items-center gap-[3px]" aria-hidden>
+        {[1, 2, 3].map((step) => (
+          <span
+            key={step}
+            className={`h-[7px] w-[7px] rounded-full ${
+              rank >= step ? (returned ? 'bg-fail' : 'bg-ok') : 'bg-line'
+            }`}
+          />
+        ))}
+      </span>
+      <span
+        className={`text-[11px] font-semibold ${
+          returned ? 'text-fail' : s === 'delivered' ? 'text-ok' : rank > 0 ? 'text-navy-500' : 'text-muted'
+        }`}
+      >
+        {STATUS_LABEL[s] ?? status}
+      </span>
+    </span>
+  )
 }
 
 function fmtDate(iso: string): string {

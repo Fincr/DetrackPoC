@@ -6,7 +6,7 @@ import { useSites } from './hooks/useSites'
 import { signOut, type Profile } from './hooks/useSession'
 import type { QueuedPod } from './lib/db'
 import { subscribeSync } from './lib/syncEvents'
-import { isRollover, type Parcel, type Site } from './lib/types'
+import { isRollover, isTerminal, type Parcel, type Site } from './lib/types'
 import { CaptureScreen } from './screens/CaptureScreen'
 import { ResultScreen } from './screens/ResultScreen'
 import { SiteCaptureScreen } from './screens/SiteCaptureScreen'
@@ -81,6 +81,7 @@ export default function App({ profile }: { profile: Profile }) {
           parcels={myParcels}
           error={error}
           routeLabel={routeLabel}
+          driverId={driverId}
           sites={sites ?? undefined}
           onSelectSite={(site) => setView({ name: 'site', site })}
           onSelect={(parcel, scannedValue) =>
@@ -104,7 +105,7 @@ export default function App({ profile }: { profile: Profile }) {
  *  the active run, "Revisit · Domestic" when re-opening a completed stop. */
 function captureEyebrow(parcel: Parcel, parcels: Parcel[] | null): string {
   if (isRollover(parcel)) return `Rollover · ${parcel.area}`
-  const active = parcels?.filter((p) => p.status === 'pending') ?? []
+  const active = parcels?.filter((p) => !isTerminal(p.status)) ?? []
   const idx = active.findIndex((p) => p.id === parcel.id)
   if (idx === -1) return `Revisit · ${parcel.area}`
   return `Stop ${idx + 1} of ${active.length} · ${parcel.area}`

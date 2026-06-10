@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from 'dexie'
-import type { Driver, Fix, Parcel, PhotoType, PodStatus, Route } from './types'
+import type { Driver, Fix, Parcel, PhotoType, PodStatus, Route, Stage } from './types'
 
 /** A capture as it sits in the local queue (§8): photo/signature blobs and
  *  all metadata land here FIRST — nothing blocks on the network. Synced items
@@ -34,8 +34,33 @@ export interface QueuedPod {
   lastError: string | null
 }
 
+/** A lifecycle stage scan (collection/warehouse) in the local queue — the
+ *  quick-scan sibling of QueuedPod: no photos/signature, just barcode +
+ *  timestamp + GPS + stage. Same local-first rules: queued offline, drained
+ *  by the sync worker, kept (flag flipped) as history. The delivered stage
+ *  rides the POD pipeline instead. */
+export interface QueuedEvent {
+  /** Client-generated UUID — the idempotency key for the server upsert */
+  eventId: string
+  parcelId: string
+  parcelRef: string
+  trackingScanned: string
+  stage: Stage
+  capturedAt: string // ISO, device clock at the scan (evidence time)
+  location: Fix | null
+  /** Driver who scanned — stamped onto parcel_events.driver_id (RLS-checked) */
+  driverId?: string
+  /** 0 = queued, 1 = synced (numbers — Dexie can't index booleans) */
+  synced: 0 | 1
+  syncedAt: string | null
+  queuedAt: string
+  attempts: number
+  lastError: string | null
+}
+
 export const db = new Dexie('epod') as Dexie & {
   pods: EntityTable<QueuedPod, 'podId'>
+  events: EntityTable<QueuedEvent, 'eventId'>
   /** Read-through cache of the server stop list, so a cold start with no
    *  signal still shows the run sheet. The server stays the source of
    *  truth — every successful fetch replaces the cache. */
@@ -56,6 +81,13 @@ db.version(2).stores({
 })
 db.version(3).stores({
   pods: 'podId, synced, queuedAt',
+  parcels: 'id',
+  routes: 'id',
+  drivers: 'id',
+})
+db.version(4).stores({
+  pods: 'podId, synced, queuedAt',
+  events: 'eventId, synced, queuedAt',
   parcels: 'id',
   routes: 'id',
   drivers: 'id',
