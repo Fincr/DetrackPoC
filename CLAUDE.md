@@ -7,8 +7,12 @@ acceptance-test walkthrough is `DEMO.md`.
 
 ## Ground rules
 
-- **PoC, not production.** Convincing runnable demo > completeness. No real
-  auth (hardcoded `drv_demo`), no multi-tenancy, RLS off, public bucket.
+- **PoC, not production.** Convincing runnable demo > completeness. Auth is
+  real but demo-grade: Supabase Auth sign-in portal, seeded logins (admin +
+  3 drivers, password `citipost`, created by `scripts/seed-auth.mjs` — rerun
+  after every `db reset`), RLS on every table (`profiles` maps user → role +
+  driver_id; drivers see only their route's parcels/PODs, dispatch is
+  admin-only), private `pod-evidence` bucket. No multi-tenancy.
 - Keep logic commented where non-obvious: overlay maths (`stamp.ts`), sync
   idempotency (`pod.ts`/`syncWorker.ts`), GPS acquisition (`useGeolocation.ts`),
   EWKB parsing (`geo.ts`).
@@ -40,7 +44,9 @@ CaptureScreen ─→ queuePod() ──→ Dexie (epod.pods: bundle + blobs, sync
                                     (onConflict pod_id,photo_type) → parcel status
 Triggers: app load · window "online" · 8s interval · post-capture · badge tap
 Events:   syncEvents.ts emitter → useSyncStatus / useQueuedPod re-query
-Routing:  main.tsx hash router — #/dispatch = DispatcherScreen, else driver App
+Routing:  main.tsx hash router gated by useSession (LoginScreen when signed
+          out) — #/allocate · #/jobs · #/dispatch = dispatcher (admin-only;
+          drivers bounced), else driver App. driver_id comes from the session.
 ```
 
 - **Idempotency invariant:** every server write is keyed on the
@@ -91,7 +97,8 @@ Routing:  main.tsx hash router — #/dispatch = DispatcherScreen, else driver Ap
   gps_accuracy_m, gps_simulated, signature_path, driver_id
 - `pod_photos` — pod_id FK cascade, photo_type label|where_left,
   storage_path, orig_kb, compressed_kb, **unique (pod_id, photo_type)**
-- Bucket `pod-evidence`: public read + open insert (PoC policies)
+- Bucket `pod-evidence`: private — signed-in read + insert only; the
+  dispatcher views photos via signed URLs
 
 ## Design tokens (§7) — in `tailwind.config.js`
 
@@ -113,6 +120,7 @@ Routing:  main.tsx hash router — #/dispatch = DispatcherScreen, else driver Ap
 npm run dev                  # vite dev server
 npm run build                # tsc -b && vite build (run before committing)
 npx supabase start|stop      # local stack (Docker)
-npx supabase db reset        # re-apply migration + seed
-node scripts/smoke-db.mjs    # stack/seed/bucket/idempotency smoke test
+npx supabase db reset        # re-apply migrations + seed (wipes auth users!)
+node scripts/seed-auth.mjs   # recreate demo logins — required after db reset
+node scripts/smoke-db.mjs    # stack/seed/RLS/bucket/idempotency smoke test
 ```
