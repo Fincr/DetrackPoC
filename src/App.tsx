@@ -54,6 +54,22 @@ export default function App() {
     return names.length ? names.join(' · ') : undefined
   }, [fleet, driverId])
 
+  // The per-job POD page is a full-width console — render it outside the
+  // sidebar shell so it owns the whole viewport (matches the proof-of-delivery
+  // layout: navy app bar + evidence cards).
+  if (view.name === 'capture') {
+    return (
+      <CaptureScreen
+        parcel={view.parcel}
+        trackingScanned={view.scannedValue}
+        driverId={driverId}
+        eyebrow={captureEyebrow(view.parcel, myParcels)}
+        onBack={() => setView({ name: 'stops' })}
+        onComplete={(pod, previewUrl) => setView({ name: 'done', pod, previewUrl })}
+      />
+    )
+  }
+
   return (
     <AppShell drivers={fleet?.drivers ?? null} selectedDriverId={driverId} onSelectDriver={selectDriver}>
       {view.name === 'stops' && (
@@ -64,17 +80,6 @@ export default function App() {
           onSelect={(parcel, scannedValue) =>
             setView({ name: 'capture', parcel, scannedValue: scannedValue ?? parcel.tracking_number })
           }
-        />
-      )}
-
-      {view.name === 'capture' && (
-        <CaptureScreen
-          parcel={view.parcel}
-          trackingScanned={view.scannedValue}
-          driverId={driverId}
-          eyebrow={captureEyebrow(view.parcel, myParcels)}
-          onBack={() => setView({ name: 'stops' })}
-          onComplete={(pod, previewUrl) => setView({ name: 'done', pod, previewUrl })}
         />
       )}
 

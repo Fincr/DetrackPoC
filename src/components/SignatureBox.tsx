@@ -7,11 +7,21 @@ export interface SignatureHandle {
 }
 
 /** Canvas signature pad. The parent reads the result through `handleRef`
- *  at completion time. */
-export function SignatureBox({ handleRef }: { handleRef: RefObject<SignatureHandle | null> }) {
+ *  at completion time; `onSignedChange` lets it track the signed state live
+ *  (e.g. a completion checklist). */
+export function SignatureBox({
+  handleRef,
+  onSignedChange,
+}: {
+  handleRef: RefObject<SignatureHandle | null>
+  onSignedChange?: (signed: boolean) => void
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const padRef = useRef<SignaturePad | null>(null)
   const [signed, setSigned] = useState(false)
+  // Keep the latest callback without re-running the one-time setup effect
+  const onSignedChangeRef = useRef(onSignedChange)
+  onSignedChangeRef.current = onSignedChange
 
   useEffect(() => {
     const canvas = canvasRef.current!
@@ -24,7 +34,10 @@ export function SignatureBox({ handleRef }: { handleRef: RefObject<SignatureHand
 
     const pad = new SignaturePad(canvas, { penColor: '#10192e' })
     padRef.current = pad
-    pad.addEventListener('endStroke', () => setSigned(true))
+    pad.addEventListener('endStroke', () => {
+      setSigned(true)
+      onSignedChangeRef.current?.(true)
+    })
 
     handleRef.current = {
       getBlob: () =>
@@ -53,6 +66,7 @@ export function SignatureBox({ handleRef }: { handleRef: RefObject<SignatureHand
           onClick={() => {
             padRef.current?.clear()
             setSigned(false)
+            onSignedChange?.(false)
           }}
         >
           Clear

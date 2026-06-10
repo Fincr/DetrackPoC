@@ -1,0 +1,476 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  autoMap,
+  buildParcelInputs,
+  MANIFEST_FIELDS,
+  parseManifestFile,
+  type ColumnMapping,
+  type ParsedManifest,
+} from '../lib/manifest'
+import { supabase } from '../lib/supabase'
+import { buildTrackingCsv, downloadCsv, type TrackingPod } from '../lib/trackingExport'
+import type { Manifest } from '../lib/types'
+
+interface JobCounts {
+  total: number
+  delivered: number
+}
+
+/** Dispatcher Jobs view: import a parcel manifest (.xlsx) to create a batch of
+ *  parcels, then export captured tracking data as the Evri-format CSV. Import
+ *  auto-maps columns and previews before committing; parcels land unallocated
+ *  and flow into the existing allocate → driver → POD pipeline. Same
+ *  navy/gold/paper language as the other dispatch views. */
+export function JobsScreen() {
+  const [manifests, setManifests] = useState<Manifest[] | null>(null)
+  const [counts, setCounts] = useState<Map<string, JobCounts>>(new Map())
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    const [mRes, pRes] = await Promise.all([
+      supabase.from('manifests').select('*').order('imported_at', { ascending: false }),
+      supabase.from('parcels').select('manifest_id, status'),
+    ])
+    if (mRes.error) {
+      setError(mRes.error.message)
+      return
+    }
+    setManifests(mRes.data as Manifest[])
+    setError(null)
+    const c = new Map<string, JobCounts>()
+    for (const p of (pRes.data ?? []) as { manifest_id: string | null; status: string }[]) {
+      if (!p.manifest_id) continue
+      const cur = c.get(p.manifest_id) ?? { total: 0, delivered: 0 }
+      cur.total += 1
+      if (p.status === 'delivered') cur.delivered += 1
+      c.set(p.manifest_id, cur)
+    }
+    setCounts(c)
+  }, [])
+
+  useEffect(() => {
+    void load()
+    const channel = supabase
+      .channel('jobs-feed')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'manifests' }, () => void load())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parcels' }, () => void load())
+      .subscribe()
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [load])
+
+  return (
+    <div className="min-h-dvh sm:px-8 sm:py-8">
+      <div className="mx-auto max-w-4xl">
+        <header className="gold-underline relative bg-navy px-5 pb-5 pt-[max(16px,env(safe-area-inset-top))] text-white sm:rounded-t-2xl sm:px-6">
+          <a href="#/" className="text-[11px] font-semibold text-[#9fb0d6]">
+            ‹ Driver app
+          </a>
+          <div className="mt-1 text-[10.5px] font-semibold uppercase tracking-[2px] text-gold-soft">
+            Citipost · Dispatch
+          </div>
+          <div className="mt-[3px] flex items-baseline justify-between gap-4">
+            <h1 className="font-serif text-[22px]">Jobs & manifests</h1>
+            <span className="font-mono text-xs tracking-[1px] text-[#9fb0d6]">
+              {manifests ? `${manifests.length} job${manifests.length === 1 ? '' : 's'}` : '…'}
+            </span>
+          </div>
+          <div className="mt-3 flex gap-2">
+            <a
+              href="#/allocate"
+              className="rounded-full px-3 py-1 text-[12px] font-semibold text-[#9fb0d6] transition hover:bg-white/5"
+            >
+              Allocate
+            </a>
+            <span className="rounded-full bg-white/10 px-3 py-1 text-[12px] font-semibold text-white">Jobs</span>
+            <a
+              href="#/dispatch"
+              className="rounded-full px-3 py-1 text-[12px] font-semibold text-[#9fb0d6] transition hover:bg-white/5"
+            >
+              Captured PODs
+            </a>
+          </div>
+        </header>
+
+        <div className="min-h-[calc(100dvh-150px)] bg-paper p-4 sm:min-h-0 sm:rounded-b-2xl sm:p-5">
+          {error && (
+            <div className="mb-3 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">
+              {error}. Is the local Supabase stack running (and the manifests migration applied)?
+            </div>
+          )}
+
+          <ImportCard onImported={() => void load()} />
+
+          <JobsList manifests={manifests} counts={counts} onError={setError} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ---------------------------------------------------------------- Import --- */
+
+function ImportCard({ onImported }: { onImported: () => void }) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [filename, setFilename] = useState('')
+  const [jobName, setJobName] = useState('')
+  const [parsed, setParsed] = useState<ParsedManifest | null>(null)
+  const [mapping, setMapping] = useState<ColumnMapping>({})
+  const [parsing, setParsing] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
+
+  const result = useMemo(
+    () => (parsed ? buildParcelInputs(parsed.rows, mapping) : null),
+    [parsed, mapping],
+  )
+
+  async function onFile(file: File) {
+    setProblem(null)
+    setParsing(true)
+    try {
+      const p = await parseManifestFile(file)
+      if (!p.headers.length) {
+        setProblem('No columns found in the first sheet.')
+        setParsing(false)
+        return
+      }
+      setParsed(p)
+      setMapping(autoMap(p.headers))
+      setFilename(file.name)
+      setJobName(file.name.replace(/\.[^.]+$/, ''))
+    } catch (e) {
+      setProblem(`Couldn't read the file: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    setParsing(false)
+  }
+
+  function reset() {
+    setParsed(null)
+    setMapping({})
+    setFilename('')
+    setJobName('')
+    setProblem(null)
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  async function commit() {
+    if (!result || !result.parcels.length) return
+    setImporting(true)
+    setProblem(null)
+    try {
+      const { data: manifest, error: mErr } = await supabase
+        .from('manifests')
+        .insert({ name: jobName.trim() || filename || 'Untitled job', source_filename: filename })
+        .select()
+        .single()
+      if (mErr) throw new Error(mErr.message)
+
+      const rows = result.parcels.map((p) => ({ ...p, manifest_id: (manifest as Manifest).id }))
+      // Upsert on the unique tracking_number → re-importing a manifest updates
+      // rather than duplicating, and leaves route_id/status untouched.
+      const { error: pErr } = await supabase.from('parcels').upsert(rows, { onConflict: 'tracking_number' })
+      if (pErr) throw new Error(pErr.message)
+
+      reset()
+      onImported()
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : String(e))
+    }
+    setImporting(false)
+  }
+
+  return (
+    <section className="mb-7 overflow-hidden rounded-2xl border border-line bg-white">
+      <div className="border-b border-line bg-paper/60 px-4 py-2.5">
+        <p className="section-label">Import a manifest</p>
+      </div>
+
+      <div className="p-4">
+        {/* hidden picker */}
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) void onFile(f)
+          }}
+        />
+
+        {problem && (
+          <div className="mb-3 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">
+            {problem}
+          </div>
+        )}
+
+        {!parsed ? (
+          <button
+            type="button"
+            disabled={parsing}
+            onClick={() => fileRef.current?.click()}
+            className="flex w-full flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-navy-500/50 bg-paper/40 px-4 py-8 text-center transition hover:border-navy-500 active:scale-[0.99]"
+          >
+            <UploadGlyph />
+            <span className="font-serif text-base text-navy">
+              {parsing ? 'Reading…' : 'Choose a manifest (.xlsx)'}
+            </span>
+            <span className="text-[12.5px] text-muted">
+              Each row becomes a parcel — we'll map the columns next
+            </span>
+          </button>
+        ) : (
+          <div>
+            <div className="mb-4">
+              <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[1.4px] text-muted">
+                Job name
+              </label>
+              <input
+                value={jobName}
+                onChange={(e) => setJobName(e.target.value)}
+                className="w-full rounded-[11px] border border-line bg-white px-3 py-[11px] text-sm text-ink focus:border-navy-500 focus:outline-none focus:ring-[3px] focus:ring-navy-500/10"
+              />
+              <p className="mt-1 text-[11.5px] text-muted">
+                from <span className="font-mono">{filename}</span> · {parsed.rows.length} rows
+              </p>
+            </div>
+
+            {/* Column mapping */}
+            <p className="section-label mb-2">Map columns</p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {MANIFEST_FIELDS.map((f) => (
+                <div key={f.key} className="flex items-center justify-between gap-3 rounded-[11px] border border-line bg-paper/40 px-3 py-2">
+                  <span className="text-[13px] font-semibold text-ink">
+                    {f.label}
+                    {f.required && <span className="text-fail"> *</span>}
+                  </span>
+                  <select
+                    value={mapping[f.key] ?? ''}
+                    onChange={(e) => setMapping((m) => ({ ...m, [f.key]: e.target.value || undefined }))}
+                    className="max-w-[60%] rounded-[9px] border border-line bg-white px-2 py-1.5 text-[12.5px] text-ink focus:border-navy-500 focus:outline-none"
+                  >
+                    <option value="">— none —</option>
+                    {parsed.headers.map((h) => (
+                      <option key={h} value={h}>
+                        {h}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+
+            {/* Validity + preview */}
+            {result && (
+              <>
+                <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px]">
+                  <span className="font-semibold text-ok">{result.parcels.length} parcels ready</span>
+                  {result.errors.length > 0 && (
+                    <span className="font-semibold text-fail">{result.errors.length} rows skipped</span>
+                  )}
+                </div>
+                {result.errors.length > 0 && (
+                  <ul className="mt-1.5 space-y-0.5 text-[12px] text-muted">
+                    {result.errors.slice(0, 4).map((e) => (
+                      <li key={e.index}>
+                        Row {e.index + 2}: {e.reason}
+                      </li>
+                    ))}
+                    {result.errors.length > 4 && <li>…and {result.errors.length - 4} more</li>}
+                  </ul>
+                )}
+
+                {result.parcels.length > 0 && (
+                  <div className="mt-3 overflow-x-auto rounded-[11px] border border-line">
+                    <table className="w-full text-left text-[12.5px]">
+                      <thead className="bg-paper/60 text-[10.5px] uppercase tracking-[0.5px] text-muted">
+                        <tr>
+                          <th className="px-2.5 py-1.5 font-bold">Tracking</th>
+                          <th className="px-2.5 py-1.5 font-bold">Recipient</th>
+                          <th className="px-2.5 py-1.5 font-bold">Address</th>
+                          <th className="px-2.5 py-1.5 font-bold">Postcode</th>
+                          <th className="px-2.5 py-1.5 font-bold">Area</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {result.parcels.slice(0, 6).map((p) => (
+                          <tr key={p.tracking_number} className="border-t border-line">
+                            <td className="px-2.5 py-1.5 font-mono text-[11.5px] text-navy-500">{p.tracking_number}</td>
+                            <td className="px-2.5 py-1.5">{p.recipient_name}</td>
+                            <td className="max-w-[180px] truncate px-2.5 py-1.5 text-muted">{p.address_line}</td>
+                            <td className="px-2.5 py-1.5">{p.postcode ?? '—'}</td>
+                            <td className="px-2.5 py-1.5">{p.area}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {result.parcels.length > 6 && (
+                      <div className="border-t border-line bg-paper/40 px-2.5 py-1.5 text-[11.5px] text-muted">
+                        +{result.parcels.length - 6} more
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={reset}
+                className="rounded-[11px] border border-line bg-white px-4 py-2.5 text-[13.5px] font-semibold text-muted"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={importing || !result || result.parcels.length === 0}
+                onClick={() => void commit()}
+                className="flex-1 rounded-[11px] bg-navy px-4 py-2.5 font-serif text-[15px] text-white transition hover:bg-navy-600 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {importing ? 'Importing…' : `Import ${result?.parcels.length ?? 0} parcels`}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+/* ------------------------------------------------------------ Jobs list --- */
+
+function JobsList({
+  manifests,
+  counts,
+  onError,
+}: {
+  manifests: Manifest[] | null
+  counts: Map<string, JobCounts>
+  onError: (msg: string | null) => void
+}) {
+  const [exporting, setExporting] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+
+  // Fetch PODs (optionally for one job) and download the Evri tracking CSV.
+  async function exportTracking(job?: Manifest) {
+    setExporting(job?.id ?? 'all')
+    setNote(null)
+    onError(null)
+    const { data, error } = await supabase
+      .from('pod_records')
+      .select(
+        'tracking_scanned,status,failure_reason,received_by,captured_at,location, parcel:parcels(tracking_number,area,postcode,manifest_id)',
+      )
+      .order('captured_at', { ascending: true })
+    if (error) {
+      onError(error.message)
+      setExporting(null)
+      return
+    }
+    type Row = {
+      tracking_scanned: string
+      status: TrackingPod['status']
+      failure_reason: string | null
+      received_by: string | null
+      captured_at: string
+      location: unknown
+      parcel: { tracking_number: string; area: string | null; postcode: string | null; manifest_id: string | null } | null
+    }
+    const pods: TrackingPod[] = (data as unknown as Row[])
+      .filter((r) => !job || r.parcel?.manifest_id === job.id)
+      .map((r) => ({
+        parcel_tracking: r.parcel?.tracking_number ?? null,
+        tracking_scanned: r.tracking_scanned,
+        status: r.status,
+        failure_reason: r.failure_reason,
+        received_by: r.received_by,
+        captured_at: r.captured_at,
+        location: r.location,
+        area: r.parcel?.area ?? null,
+        postcode: r.parcel?.postcode ?? null,
+      }))
+
+    if (pods.length === 0) {
+      setNote(`No tracking events captured yet${job ? ` for "${job.name}"` : ''}.`)
+      setExporting(null)
+      return
+    }
+    const stamp = new Date().toISOString().slice(0, 10)
+    const slug = (job?.name ?? 'all').replace(/[^a-z0-9]+/gi, '-').toLowerCase()
+    downloadCsv(`tracking_${slug}_${stamp}.csv`, buildTrackingCsv(pods))
+    setExporting(null)
+  }
+
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="section-label">Jobs</p>
+        <button
+          type="button"
+          disabled={exporting != null}
+          onClick={() => void exportTracking()}
+          className="rounded-[10px] border border-navy bg-white px-3.5 py-2 font-serif text-[13px] text-navy transition hover:bg-paper active:translate-y-px disabled:opacity-40"
+        >
+          {exporting === 'all' ? 'Exporting…' : 'Export all tracking'}
+        </button>
+      </div>
+
+      {note && (
+        <div className="mb-2 rounded-[11px] border border-gold/40 bg-gold/10 px-3 py-2 text-[12.5px] text-[#8a6d1a]">
+          {note}
+        </div>
+      )}
+
+      {manifests && manifests.length === 0 && (
+        <div className="rounded-2xl border border-line bg-white px-4 py-8 text-center text-[13px] text-muted">
+          No jobs yet — import a manifest above to create one.
+        </div>
+      )}
+
+      <div className="flex flex-col gap-2">
+        {manifests?.map((job) => {
+          const c = counts.get(job.id) ?? { total: 0, delivered: 0 }
+          return (
+            <article
+              key={job.id}
+              className="flex flex-col gap-2 rounded-2xl border border-line bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="min-w-0">
+                <div className="font-serif text-[15px] text-ink">{job.name}</div>
+                <div className="text-[12px] text-muted">
+                  {fmtDate(job.imported_at)} · {c.total} parcel{c.total === 1 ? '' : 's'} · {c.delivered} delivered
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={exporting != null}
+                onClick={() => void exportTracking(job)}
+                className="flex-none rounded-[10px] bg-navy px-3.5 py-2 font-serif text-[13px] text-white transition hover:bg-navy-600 active:translate-y-px disabled:opacity-40"
+              >
+                {exporting === job.id ? 'Exporting…' : 'Export tracking CSV'}
+              </button>
+            </article>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+function fmtDate(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+
+function UploadGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-7 w-7 stroke-navy" fill="none" strokeWidth="1.7" aria-hidden>
+      <path d="M12 16V4m0 0L7 9m5-5 5 5" />
+      <path d="M5 20h14" />
+    </svg>
+  )
+}

@@ -39,6 +39,17 @@ export interface Route {
   areas: Area[]
 }
 
+/** An imported manifest = a "job": a batch of parcels handed to us as a
+ *  spreadsheet, each row carrying its own tracking number. */
+export interface Manifest {
+  id: string
+  name: string
+  reference: string | null
+  source_filename: string | null
+  imported_at: string
+  created_at: string
+}
+
 export interface Parcel {
   id: string
   tracking_number: string
@@ -56,6 +67,8 @@ export interface Parcel {
   last_failure: string | null
   /** Route this parcel is allocated to. null = unallocated (dispatcher to-do). */
   route_id: string | null
+  /** Manifest/job this parcel was imported on. null = seeded/manual. */
+  manifest_id: string | null
   created_at: string
 }
 

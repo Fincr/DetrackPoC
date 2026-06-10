@@ -264,10 +264,10 @@ export default function PodCaptureScreen({
   const gpsLost = !shownFix && !gpsAcquiring
 
   const checklist = [
-    { key: 'barcode', label: 'Barcode scanned', done: !!barcode.trim() },
-    { key: 'recipient', label: 'Recipient recorded', done: !!recipient.trim() },
-    { key: 'photo', label: 'Photo evidence', done: !!photo },
-    { key: 'signature', label: 'Signature', done: hasInk },
+    { key: 'barcode', label: 'Barcode scanned', short: 'barcode', done: !!barcode.trim() },
+    { key: 'recipient', label: 'Recipient recorded', short: 'recipient', done: !!recipient.trim() },
+    { key: 'photo', label: 'Photo evidence', short: 'photo', done: !!photo },
+    { key: 'signature', label: 'Signature', short: 'signature', done: hasInk },
   ]
   const doneCount = checklist.filter((c) => c.done).length
   const canConfirm = doneCount === checklist.length && phase === 'editing'
@@ -640,7 +640,7 @@ export default function PodCaptureScreen({
                   <span className="font-medium text-[#8a6d1a]">
                     {checklist
                       .filter((c) => !c.done)
-                      .map((c) => c.label.toLowerCase())
+                      .map((c) => c.short)
                       .join(' · ')}
                   </span>
                 </>
@@ -832,7 +832,7 @@ function CheckDisc({ done }: { done: boolean }) {
     <span
       aria-hidden
       className={`grid h-6 w-6 flex-none place-items-center rounded-full transition ${
-        done ? 'bg-[#1f7a4d] text-white' : 'bg-[#10192e]/8 text-transparent'
+        done ? 'bg-[#1f7a4d] text-white' : 'bg-white text-transparent ring-1 ring-inset ring-[#10192e]/25'
       }`}
     >
       <TickGlyph />

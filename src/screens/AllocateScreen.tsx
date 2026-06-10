@@ -119,6 +119,12 @@ export function AllocateScreen() {
               Allocate
             </span>
             <a
+              href="#/jobs"
+              className="rounded-full px-3 py-1 text-[12px] font-semibold text-[#9fb0d6] transition hover:bg-white/5"
+            >
+              Jobs
+            </a>
+            <a
               href="#/dispatch"
               className="rounded-full px-3 py-1 text-[12px] font-semibold text-[#9fb0d6] transition hover:bg-white/5"
             >

@@ -25,6 +25,17 @@ create table routes (
   created_at timestamptz default now()
 );
 
+-- Jobs / manifests: importing a parcel manifest creates a batch of parcels
+-- (each row carries its own tracking number); parcels.manifest_id links them.
+create table manifests (
+  id              uuid primary key default gen_random_uuid(),
+  name            text not null,
+  reference       text,
+  source_filename text,
+  imported_at     timestamptz default now(),
+  created_at      timestamptz default now()
+);
+
 -- The parcels / jobs a driver is delivering today
 create table parcels (
   id              uuid primary key default gen_random_uuid(),
@@ -47,10 +58,15 @@ create table parcels (
   -- Allocation link. null = unallocated: in the dispatcher's to-do list,
   -- hidden from every driver's run until assigned.
   route_id        uuid references routes(id),
+  -- Job this parcel was imported on (null = seeded/manual); meta keeps any
+  -- extra manifest columns we don't model.
+  manifest_id     uuid references manifests(id),
+  meta            jsonb,
   created_at      timestamptz default now()
 );
 
 create index parcels_route_idx on parcels(route_id);
+create index parcels_manifest_idx on parcels(manifest_id);
 
 -- One proof-of-delivery record per delivery attempt
 create table pod_records (
@@ -168,6 +184,7 @@ update parcels p set route_id = r.id
 -- The PoC posture is RLS OFF (no auth, demo only) - enforce it explicitly:
 alter table drivers     disable row level security;
 alter table routes      disable row level security;
+alter table manifests   disable row level security;
 alter table parcels     disable row level security;
 alter table pod_records disable row level security;
 alter table pod_photos  disable row level security;
@@ -179,4 +196,7 @@ do $$ begin
 exception when duplicate_object then null; when undefined_object then null; end $$;
 do $$ begin
   alter publication supabase_realtime add table parcels;
+exception when duplicate_object then null; when undefined_object then null; end $$;
+do $$ begin
+  alter publication supabase_realtime add table manifests;
 exception when duplicate_object then null; when undefined_object then null; end $$;

@@ -1,10 +1,10 @@
 import exifr from 'exifr'
 import { useMemo, useRef, useState } from 'react'
 import { SignatureBox, type SignatureHandle } from '../components/SignatureBox'
-import { TopBar } from '../components/TopBar'
-import { useGeolocation, type NoFixReason } from '../hooks/useGeolocation'
+import { useGeolocation } from '../hooks/useGeolocation'
+import { useSyncStatus } from '../hooks/useSyncStatus'
 import type { QueuedPod } from '../lib/db'
-import { fmtDistance, haversineM, parseEwkbPoint } from '../lib/geo'
+import { haversineM, parseEwkbPoint } from '../lib/geo'
 import { queuePod, type CapturedPhoto } from '../lib/pod'
 import { stampAndCompress, type StampedPhoto } from '../lib/stamp'
 import { syncNow } from '../lib/syncWorker'
@@ -12,29 +12,13 @@ import type { Fix, Parcel, PodStatus } from '../lib/types'
 
 const FAILURE_PRESETS = ['No access', 'Refused', 'Address not found', 'Other…'] as const
 
-/** Driver-readable explanations for a missing fix — actionable where the
- *  driver can act (permission, location services), honest where they can't.
- *  There is no simulated fallback: a capture without GPS records none. */
-// iOS denies silently when its own switches are off — point at Settings, not
-// at a Chrome padlock the user doesn't have.
-const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent)
-const NO_FIX_NOTES: Record<NoFixReason, string> = {
-  denied: IS_IOS
-    ? 'Location is blocked by iOS. Settings → Privacy & Security → Location Services: on, and set your browser (Safari Websites / Chrome) to While Using the App. If you ever tapped Don’t Allow here: ᴀA menu → Website Settings → Location → Ask. Then Retry.'
-    : 'Location is blocked for this site — allow it via the padlock icon, then retry. (Chrome blocks it silently on self-signed HTTPS dev URLs — use a trusted address.)',
-  insecure:
-    'Real GPS needs a secure connection — open the app over HTTPS (npm run dev:https on the LAN).',
-  timeout: 'Could not get a GPS fix in time — retry, ideally with a clearer view of the sky.',
-  unavailable:
-    'The device returned no GPS fix — check location services are switched on, then retry.',
-}
-
-/** Capture screen (§6.2): the full §5 evidence bundle. Photos are stamped +
- *  compressed on capture; GPS is real-or-nothing (no simulated fix — a
- *  capture without one records none and says so); signature is optional.
- *  Completion writes to the local queue (§8) and returns instantly — the sync
- *  worker uploads in the background. Two columns on laptop (evidence | form),
- *  a single flow on mobile. */
+/** Proof-of-delivery capture for a specific job (§6.2), kept deliberately
+ *  simple for the driver: choose an outcome, photograph the parcel, sign.
+ *  GPS and the timestamp are still acquired, stamped into the photo, and
+ *  stored on the record (real-or-nothing) — they're just not shown in the UI,
+ *  so there's nothing extra for the driver to read or act on. Completion
+ *  writes to the local queue and returns instantly; the sync worker uploads in
+ *  the background. */
 export function CaptureScreen({
   parcel,
   trackingScanned,
@@ -52,50 +36,47 @@ export function CaptureScreen({
   onComplete: (pod: QueuedPod, previewUrl: string) => void
   onBack: () => void
 }) {
-  const { fix, noFixReason, acquiring, getFix, retry } = useGeolocation()
+  // GPS still warms up on mount and is read fresh at the shutter — it's just
+  // never surfaced in the UI now.
+  const { getFix } = useGeolocation()
+  const { online } = useSyncStatus()
   const [labelPhoto, setLabelPhoto] = useState<StampedPhoto | null>(null)
-  const [wherePhoto, setWherePhoto] = useState<StampedPhoto | null>(null)
   const [capturedAt, setCapturedAt] = useState<Date | null>(null)
-  const [receivedBy, setReceivedBy] = useState('')
   const [outcome, setOutcome] = useState<PodStatus>('delivered')
   const [failurePreset, setFailurePreset] = useState('')
   const [failureOther, setFailureOther] = useState('')
+  const [signed, setSigned] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const sigRef = useRef<SignatureHandle>(null)
-  // The fix actually burned into the label photo — the record must match the
-  // image. undefined = no label photo yet (chip tracks the live fix);
-  // null = photo was taken with NO fix, so the record stays fix-less too.
+  // The fix burned into the photo — the record must match the image. null =
+  // photo taken with no fix, so the record stays fix-less too.
   const [usedFix, setUsedFix] = useState<Fix | null | undefined>(undefined)
   const barRef = useRef<HTMLSpanElement>(null)
-  // Geofence: where this parcel *should* be delivered (EWKB from PostgREST)
+  // Geofence: where this parcel *should* be delivered (EWKB from PostgREST).
+  // Still computed + stored at completion, just not shown.
   const destination = useMemo(() => parseEwkbPoint(parcel.destination), [parcel.destination])
 
-  async function takePhoto(file: File, slot: 'label' | 'where_left') {
+  async function takePhoto(file: File) {
     try {
       const takenAt = new Date() // evidence time = device clock at the shutter (§5)
-      // GPS provenance ladder: prefer the fix the camera embedded in the
-      // photo itself (EXIF), then a fresh live device fix at the shutter.
-      // Browsers often strip EXIF location for privacy, so the device path
-      // is the common one. No fix at all → null, never a fabricated point.
+      // GPS provenance ladder: prefer the fix the camera embedded in the photo
+      // itself (EXIF), then a fresh live device fix at the shutter. No fix at
+      // all → null, never a fabricated point.
       const exif = await exifr.gps(file).catch(() => undefined)
       const gpsFix: Fix | null =
         exif && Number.isFinite(exif.latitude) && Number.isFinite(exif.longitude)
           ? {
               lat: +exif.latitude.toFixed(5),
               lng: +exif.longitude.toFixed(5),
-              accuracyM: null, // cameras don't record accuracy in EXIF
+              accuracyM: null,
               source: 'photo_exif',
             }
-          : await getFix() // awaits the in-flight acquisition if needed
+          : await getFix()
       const stamped = await stampAndCompress(file, parcel.tracking_number, takenAt, gpsFix)
-      if (slot === 'label') {
-        setLabelPhoto(stamped)
-        setCapturedAt((prev) => prev ?? takenAt)
-        setUsedFix(gpsFix)
-      } else {
-        setWherePhoto(stamped)
-      }
+      setLabelPhoto(stamped)
+      setCapturedAt((prev) => prev ?? takenAt)
+      setUsedFix(gpsFix)
     } catch (e) {
       setError(`Photo processing failed: ${e instanceof Error ? e.message : String(e)}`)
     }
@@ -104,6 +85,18 @@ export function CaptureScreen({
   const failureReason = failurePreset === 'Other…' ? failureOther.trim() : failurePreset
   const canComplete =
     !!labelPhoto && !submitting && (outcome === 'delivered' || failureReason.length > 0)
+
+  const checklist =
+    outcome === 'delivered'
+      ? [
+          { label: 'Photo evidence', done: !!labelPhoto },
+          { label: 'Signature', done: signed, optional: true },
+        ]
+      : [
+          { label: 'Failure reason', done: failureReason.length > 0 },
+          { label: 'Photo evidence', done: !!labelPhoto },
+          { label: 'Signature', done: signed, optional: true },
+        ]
 
   async function complete() {
     if (!labelPhoto || !capturedAt) return
@@ -114,23 +107,18 @@ export function CaptureScreen({
     const photos: CapturedPhoto[] = [
       { type: 'label', blob: labelPhoto.blob, origKb: labelPhoto.origKb, compressedKb: labelPhoto.compressedKb },
     ]
-    if (wherePhoto) {
-      photos.push({ type: 'where_left', blob: wherePhoto.blob, origKb: wherePhoto.origKb, compressedKb: wherePhoto.compressedKb })
-    }
 
     try {
       // undefined = label photo somehow never set it — take a live reading.
       // null = the photo was stamped without a fix; the record honours that.
       const gpsFix = usedFix !== undefined ? usedFix : await getFix()
       const signature = (await sigRef.current?.getBlob()) ?? null
-      // Local-first (§8): this is an IndexedDB write — instant, works with
-      // zero signal. The driver sees "queued" immediately.
       const pod = await queuePod({
         parcel,
         trackingScanned,
         status: outcome,
         failureReason: outcome === 'failed' ? failureReason : null,
-        receivedBy: receivedBy.trim(),
+        receivedBy: '',
         capturedAt,
         photos,
         location: gpsFix,
@@ -147,319 +135,294 @@ export function CaptureScreen({
     }
   }
 
-  const shownFix = usedFix !== undefined ? usedFix : fix
-
   return (
-    <>
-      <TopBar
-        eyebrow={eyebrow}
-        title={parcel.tracking_number}
-        mono={`‖▌║▌‖║▌║‖ ${trackingScanned.replace(/-/g, ' ')}`}
-        onBack={onBack}
-      />
-
-      <div className="mx-auto w-full max-w-5xl px-4 py-5 lg:px-8 lg:py-7">
-        <div className="mb-5 rounded-2xl border border-line bg-white px-4 py-3.5">
-          <div className="text-[15px] font-semibold">{parcel.recipient_name}</div>
-          <div className="mt-0.5 text-[13px] leading-[1.45] text-muted">
-            {parcel.address_line}
-            {parcel.postcode ? `, ${parcel.postcode}` : ''}
-          </div>
-        </div>
-
-        <div className="lg:grid lg:grid-cols-2 lg:items-start lg:gap-8">
-          {/* Evidence: photos + provenance chips */}
-          <div>
-            <p className="section-label mb-[9px]">Capture label</p>
-            <PhotoZone
-              photo={labelPhoto}
-              prompt="Tap to photograph the label"
-              sub="Timestamp + GPS are burned into the image"
-              onPhoto={(f) => void takePhoto(f, 'label')}
-              onRetake={() => {
-                setLabelPhoto(null)
-                setUsedFix(undefined) // chip tracks the live fix again until re-shot
-              }}
-            />
-
-            <div className="mt-3">
-              <PhotoZone
-                photo={wherePhoto}
-                prompt="Add photo of where it was left"
-                sub="Optional"
-                compact
-                onPhoto={(f) => void takePhoto(f, 'where_left')}
-                onRetake={() => setWherePhoto(null)}
-              />
-            </div>
-
-            <div className="mt-3 grid grid-cols-2 gap-[9px]">
-              <Chip
-                k="Timestamp"
-                v={capturedAt?.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) ?? '—'}
-                pending={!capturedAt}
-              />
-              {/* Shows the fix that will go on the record: the fix burned into
-                  the label photo once one is taken, otherwise the live device
-                  fix. Real-or-nothing — "no fix" renders red, never a
-                  fabricated point. */}
-              {(() => {
-                const shown = shownFix
-                const pending = usedFix === undefined && acquiring
-                return (
-                  <Chip
-                    k={shown?.source === 'photo_exif' ? 'GPS location (from photo)' : 'GPS location'}
-                    v={
-                      shown
-                        ? `${shown.lat.toFixed(5)}, ${shown.lng.toFixed(5)}`
-                        : pending
-                          ? 'acquiring…'
-                          : usedFix === null
-                            ? 'not recorded'
-                            : 'no fix'
-                    }
-                    pending={pending}
-                    fail={!shown && !pending}
-                  />
-                )
-              })()}
-              {/* Geofence chip: how far the current fix is from where the parcel
-                  should be going — green near, gold/red the further off it is */}
-              {(() => {
-                const dist = shownFix && destination ? haversineM(shownFix, destination) : null
-                return (
-                  <div className="col-span-2 rounded-[11px] border border-line bg-white px-[11px] py-[9px]">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.6px] text-muted">
-                      Distance from address
-                    </div>
-                    <div
-                      className={`mt-[3px] text-[13px] font-semibold tabular-nums ${
-                        dist == null
-                          ? 'font-medium text-muted'
-                          : dist <= 250
-                            ? 'text-ok'
-                            : dist <= 1000
-                              ? 'text-gold'
-                              : 'text-fail'
-                      }`}
-                    >
-                      {dist == null ? '—' : fmtDistance(dist)}
-                    </div>
-                  </div>
-                )
-              })()}
-            </div>
-
-            {/* Why there's no fix — a blocked permission shouldn't fail silently
-                when the whole point is proving where the driver stood */}
-            {shownFix == null && noFixReason && (
-              <div className="mt-2 flex items-start justify-between gap-3 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2 text-[12px] leading-[1.45] text-fail">
-                <span>{NO_FIX_NOTES[noFixReason]}</span>
-                <button type="button" onClick={retry} className="flex-none font-semibold underline">
-                  Retry
-                </button>
-              </div>
-            )}
-
-            {/* GPS recovered after a fix-less photo: the record honours the
-                stamp, so the only way to get the position on it is a re-shoot */}
-            {usedFix === null && fix && (
-              <div className="mt-2 rounded-[11px] border border-gold/40 bg-gold/10 px-3 py-2 text-[12px] leading-[1.45] text-[#8a6d1a]">
-                GPS is working now, but the label photo was taken without a fix — tap{' '}
-                <span className="font-semibold">Retake</span> to record your position.
-              </div>
-            )}
-          </div>
-
-          {/* Outcome: recipient, delivered/failed, signature, completion */}
-          <div className="mt-6 lg:mt-0">
-            <Field label="Received by">
-              <input
-                value={receivedBy}
-                onChange={(e) => setReceivedBy(e.target.value)}
-                placeholder={'Name, or "left in porch"'}
-                className={INPUT_CLASS}
-              />
-            </Field>
-
-            <Field label="Outcome">
-              <div className="flex gap-2">
-                <SegButton active={outcome === 'delivered'} colour="ok" onClick={() => setOutcome('delivered')}>
-                  Delivered
-                </SegButton>
-                <SegButton active={outcome === 'failed'} colour="fail" onClick={() => setOutcome('failed')}>
-                  Failed
-                </SegButton>
-              </div>
-            </Field>
-
-            {outcome === 'failed' && (
-              <Field label="Failure reason (required)">
-                <select
-                  value={failurePreset}
-                  onChange={(e) => setFailurePreset(e.target.value)}
-                  className={INPUT_CLASS}
-                >
-                  <option value="" disabled>
-                    Select a reason…
-                  </option>
-                  {FAILURE_PRESETS.map((r) => (
-                    <option key={r}>{r}</option>
-                  ))}
-                </select>
-                {failurePreset === 'Other…' && (
-                  <input
-                    value={failureOther}
-                    onChange={(e) => setFailureOther(e.target.value)}
-                    placeholder="Describe the failure"
-                    className={`${INPUT_CLASS} mt-2`}
-                  />
-                )}
-              </Field>
-            )}
-
-            <Field label="Signature (optional)">
-              <SignatureBox handleRef={sigRef} />
-            </Field>
-
-            {error && (
-              <div className="mt-3.5 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">
-                {error}
-              </div>
-            )}
-
+    <div className="flex min-h-dvh flex-col">
+      {/* App bar — brand, the job, connection status */}
+      <header className="gold-underline sticky top-0 z-30 bg-navy text-white">
+        <div className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4 px-4 pb-3 pt-[max(10px,env(safe-area-inset-top))] sm:px-6 lg:px-8">
+          <div className="flex min-w-0 items-center gap-3">
             <button
               type="button"
-              disabled={!canComplete}
-              onClick={complete}
-              className="relative mt-[18px] w-full overflow-hidden rounded-[13px] bg-navy p-[15px] font-serif text-base tracking-[0.3px] text-white transition hover:bg-navy-600 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={onBack}
+              aria-label="Back to today's stops"
+              className="-ml-1 grid h-9 w-9 flex-none place-items-center rounded-lg text-white/70 transition hover:bg-white/10 hover:text-white"
             >
-              {submitting ? 'Saving…' : 'Complete delivery'}
-              <span
-                ref={barRef}
-                className="absolute bottom-0 left-0 h-[3px] w-0 bg-gold transition-[width] duration-200"
-              />
+              <ChevronLeft />
             </button>
+            <span
+              aria-hidden
+              className="grid h-9 w-9 flex-none place-items-center rounded-lg bg-gradient-to-br from-gold-soft to-gold text-navy shadow-[inset_0_1px_0_rgba(255,255,255,.35)]"
+            >
+              <ParcelGlyph />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-[10px] font-bold uppercase tracking-[0.22em] text-gold-soft">
+                Citipost · Proof of delivery
+              </p>
+              <h1 className="truncate font-serif text-[19px] leading-tight sm:text-[21px]">
+                {parcel.tracking_number}
+              </h1>
+            </div>
+          </div>
+          <StatusPill online={online} />
+        </div>
+      </header>
+
+      {/* Workspace */}
+      <main className="mx-auto w-full max-w-5xl px-4 pb-12 pt-5 sm:px-6 lg:px-8 lg:pt-8">
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start">
+          {/* Left — outcome + photo */}
+          <div className="grid gap-5">
+            <Card step="01" title="Delivery" state={outcome === 'delivered' || failureReason ? 'done' : 'required'}>
+              <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                <div className="min-w-0">
+                  <div className="text-[15px] font-semibold">{parcel.recipient_name}</div>
+                  <div className="text-[13px] leading-[1.45] text-muted">
+                    {parcel.address_line}
+                    {parcel.postcode ? `, ${parcel.postcode}` : ''}
+                  </div>
+                </div>
+                <span className="text-[10px] font-bold uppercase tracking-[0.6px] text-gold">{eyebrow}</span>
+              </div>
+
+              <div className="flex gap-2.5">
+                <SegButton active={outcome === 'delivered'} tone="ok" onClick={() => setOutcome('delivered')}>
+                  Delivered
+                </SegButton>
+                <SegButton active={outcome === 'failed'} tone="fail" onClick={() => setOutcome('failed')}>
+                  Couldn’t deliver
+                </SegButton>
+              </div>
+
+              {outcome === 'failed' && (
+                <div className="mt-3">
+                  <FieldLabel>Reason (required)</FieldLabel>
+                  <select
+                    value={failurePreset}
+                    onChange={(e) => setFailurePreset(e.target.value)}
+                    className={INPUT_CLASS}
+                  >
+                    <option value="" disabled>
+                      Select a reason…
+                    </option>
+                    {FAILURE_PRESETS.map((r) => (
+                      <option key={r}>{r}</option>
+                    ))}
+                  </select>
+                  {failurePreset === 'Other…' && (
+                    <input
+                      value={failureOther}
+                      onChange={(e) => setFailureOther(e.target.value)}
+                      placeholder="Describe the failure"
+                      className={`${INPUT_CLASS} mt-2`}
+                    />
+                  )}
+                </div>
+              )}
+            </Card>
+
+            <Card step="02" title="Photo evidence" state={labelPhoto ? 'done' : 'required'}>
+              <PhotoZone
+                photo={labelPhoto}
+                onPhoto={(f) => void takePhoto(f)}
+                onRetake={() => {
+                  setLabelPhoto(null)
+                  setUsedFix(undefined)
+                }}
+              />
+            </Card>
+          </div>
+
+          {/* Right rail — signature + completion (sticky on laptop) */}
+          <div className="grid gap-5 lg:sticky lg:top-24">
+            <Card step="03" title="Signature" state={signed ? 'done' : 'optional'}>
+              <SignatureBox handleRef={sigRef} onSignedChange={setSigned} />
+            </Card>
+
+            <section className="rounded-2xl border border-line bg-white p-5 shadow-[0_1px_2px_rgba(16,25,46,.05),0_12px_32px_-16px_rgba(16,25,46,.18)]">
+              <ul className="grid gap-2.5">
+                {checklist.map((item) => (
+                  <li key={item.label} className="flex items-center gap-3 text-[14px]">
+                    <CheckDisc done={item.done} />
+                    <span className={item.done ? 'font-medium text-ink' : 'text-muted'}>
+                      {item.label}
+                      {item.optional && <span className="text-muted"> · optional</span>}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+
+              <div className="my-4 h-px bg-line" />
+
+              {error && (
+                <p className="mb-3 rounded-xl border border-fail/30 bg-fail/[0.08] px-4 py-3 text-[13px] text-fail">
+                  {error}
+                </p>
+              )}
+
+              <button
+                type="button"
+                disabled={!canComplete}
+                onClick={() => void complete()}
+                className="relative flex h-[54px] w-full items-center justify-center overflow-hidden rounded-xl bg-navy font-serif text-[17px] tracking-[0.02em] text-white shadow-[0_10px_24px_-10px_rgba(14,28,56,.5)] transition hover:bg-navy-600 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
+              >
+                {submitting ? 'Saving…' : outcome === 'failed' ? 'Log failed delivery' : 'Confirm delivery'}
+                <span
+                  ref={barRef}
+                  className="absolute bottom-0 left-0 h-[3px] w-0 bg-gold transition-[width] duration-200"
+                />
+              </button>
+
+              <p className="mt-3 text-center text-[12px] leading-relaxed text-muted">
+                {online
+                  ? 'Saved on this device and synced to dispatch.'
+                  : 'Works offline — saved on this device and synced automatically when signal returns.'}
+              </p>
+            </section>
           </div>
         </div>
-      </div>
-    </>
+      </main>
+    </div>
   )
 }
 
 const INPUT_CLASS =
-  'w-full rounded-[11px] border border-line bg-white px-3 py-[11px] text-sm text-ink ' +
-  'focus:border-navy-500 focus:outline-none focus:ring-[3px] focus:ring-navy-500/10'
+  'h-12 w-full rounded-xl border border-line bg-paper px-3.5 text-[15px] text-ink outline-none ' +
+  'transition placeholder:text-muted focus:border-navy-500 focus:bg-white focus:ring-[3px] focus:ring-navy-500/15'
 
-/** Dashed capture zone → solid-bordered photo with a translucent Retake pill (§7). */
-function PhotoZone({
-  photo,
-  prompt,
-  sub,
-  compact = false,
-  onPhoto,
-  onRetake,
+/** A numbered card with a status pill (done / required / optional). */
+function Card({
+  step,
+  title,
+  state,
+  children,
 }: {
-  photo: StampedPhoto | null
-  prompt: string
-  sub: string
-  compact?: boolean
-  onPhoto: (file: File) => void
-  onRetake: () => void
+  step: string
+  title: string
+  state: 'done' | 'required' | 'optional'
+  children: React.ReactNode
 }) {
-  const inputRef = useRef<HTMLInputElement>(null)
-
   return (
-    <label
-      className={`relative flex w-full cursor-pointer flex-col items-center justify-center gap-2.5 overflow-hidden rounded-2xl border-2 bg-white p-3.5 text-center text-navy transition active:scale-[0.99] ${
-        photo ? 'border-solid border-navy aspect-[4/3]' : compact ? 'border-dashed border-navy-500/60 py-4' : 'border-dashed border-navy-500 aspect-[4/3]'
-      }`}
-    >
-      {photo ? (
-        <>
-          <img src={photo.url} alt="captured" className="absolute inset-0 h-full w-full object-cover" />
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault()
-              if (inputRef.current) inputRef.current.value = ''
-              onRetake()
-            }}
-            className="absolute right-2.5 top-2.5 z-[3] rounded-[20px] bg-navy/80 px-3 py-[7px] text-[11.5px] font-semibold text-white backdrop-blur-sm"
-          >
-            Retake
-          </button>
-        </>
-      ) : (
-        <>
-          {!compact && (
-            <span className="flex h-[46px] w-[46px] items-center justify-center rounded-full bg-navy">
-              <CameraIcon />
-            </span>
-          )}
-          <span className={`font-semibold ${compact ? 'text-[13px]' : 'text-sm'}`}>{prompt}</span>
-          <span className="text-xs text-muted">{sub}</span>
-        </>
-      )}
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="hidden"
-        onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (file) onPhoto(file)
-        }}
-      />
+    <section className="rounded-2xl border border-line bg-white shadow-[0_1px_2px_rgba(16,25,46,.05),0_12px_32px_-16px_rgba(16,25,46,.18)]">
+      <header className="flex min-h-[52px] items-center justify-between gap-3 border-b border-line px-5 py-2.5">
+        <div className="flex items-center gap-2.5">
+          <span aria-hidden className="font-mono text-[11px] font-bold text-gold">
+            {step}
+          </span>
+          <h2 className="text-[12.5px] font-bold uppercase tracking-[0.14em] text-navy-500">{title}</h2>
+        </div>
+        {state === 'done' ? (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-ok/10 px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.08em] text-ok">
+            <TickGlyph /> Done
+          </span>
+        ) : (
+          <span className="rounded-full bg-navy/5 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">
+            {state}
+          </span>
+        )}
+      </header>
+      <div className="p-5">{children}</div>
+    </section>
+  )
+}
+
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <label className="mb-1.5 block text-[11.5px] font-bold uppercase tracking-[0.12em] text-muted">
+      {children}
     </label>
   )
 }
 
-function Chip({ k, v, pending = false, fail = false }: { k: string; v: string; pending?: boolean; fail?: boolean }) {
-  return (
-    <div className="rounded-[11px] border border-line bg-white px-[11px] py-[9px]">
-      <div className="text-[10px] font-bold uppercase tracking-[0.6px] text-muted">{k}</div>
-      <div
-        className={`mt-[3px] text-[13px] tabular-nums ${
-          pending ? 'font-medium text-muted' : fail ? 'font-semibold text-fail' : 'font-semibold'
-        }`}
-      >
-        {v}
-      </div>
-    </div>
-  )
-}
+/** Big dashed capture target (click or drop) → the photo with a Retake pill.
+ *  One-tap simple: the whole zone opens the camera. */
+function PhotoZone({
+  photo,
+  onPhoto,
+  onRetake,
+}: {
+  photo: StampedPhoto | null
+  onPhoto: (file: File) => void
+  onRetake: () => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [dragOver, setDragOver] = useState(false)
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  if (photo) {
+    return (
+      <div className="relative aspect-[16/10] overflow-hidden rounded-xl">
+        <img src={photo.url} alt="Delivery evidence" className="absolute inset-0 h-full w-full object-cover" />
+        <button
+          type="button"
+          onClick={() => {
+            if (inputRef.current) inputRef.current.value = ''
+            onRetake()
+          }}
+          className="absolute right-3 top-3 h-10 rounded-full bg-navy/85 px-4 text-[13px] font-semibold text-white backdrop-blur-sm transition hover:bg-navy"
+        >
+          Retake
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            if (file) onPhoto(file)
+          }}
+        />
+      </div>
+    )
+  }
+
   return (
-    <div className="mt-3.5 first:mt-0">
-      <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[1.4px] text-muted">
-        {label}
-      </label>
-      {children}
-    </div>
+    <label
+      onDragOver={(e) => {
+        e.preventDefault()
+        setDragOver(true)
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault()
+        setDragOver(false)
+        const file = e.dataTransfer.files?.[0]
+        if (file) onPhoto(file)
+      }}
+      className={`flex aspect-[16/10] w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed bg-paper text-center transition hover:border-navy-500/60 hover:bg-[#f0eee7] active:scale-[0.995] ${
+        dragOver ? 'border-gold bg-gold/5' : 'border-navy-500/30'
+      }`}
+    >
+      <span className="grid h-16 w-16 place-items-center rounded-full bg-navy">
+        <CameraGlyph />
+      </span>
+      <span className="text-[16px] font-semibold text-navy">Photograph the parcel</span>
+      <span className="text-[13px] text-muted">
+        Tap to open the camera<span className="hidden sm:inline"> · or drop an image here</span>
+      </span>
+    </label>
   )
 }
 
 function SegButton({
   active,
-  colour,
+  tone,
   onClick,
   children,
 }: {
   active: boolean
-  colour: 'ok' | 'fail'
+  tone: 'ok' | 'fail'
   onClick: () => void
   children: React.ReactNode
 }) {
-  const activeClass = colour === 'ok' ? 'bg-ok border-ok text-white' : 'bg-fail border-fail text-white'
+  const activeClass = tone === 'ok' ? 'border-ok bg-ok text-white' : 'border-fail bg-fail text-white'
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`flex-1 rounded-[11px] border p-[11px] text-[13.5px] font-semibold transition ${
-        active ? activeClass : 'border-line bg-white text-muted'
+      className={`h-12 flex-1 rounded-xl border text-[14.5px] font-semibold transition ${
+        active ? activeClass : 'border-line bg-white text-muted hover:border-navy-500/40'
       }`}
     >
       {children}
@@ -467,11 +430,62 @@ function SegButton({
   )
 }
 
-function CameraIcon() {
+function StatusPill({ online }: { online: boolean }) {
   return (
-    <svg viewBox="0 0 24 24" className="h-6 w-6 stroke-gold-soft" fill="none" strokeWidth="1.7" aria-hidden>
+    <span
+      className={`inline-flex h-9 flex-none items-center gap-2 rounded-full border px-3.5 text-[11px] font-bold uppercase tracking-[0.12em] ${
+        online ? 'border-ok/40 bg-ok/10 text-ok' : 'border-gold/40 bg-gold/10 text-gold-soft'
+      }`}
+    >
+      <span className={`h-2 w-2 rounded-full ${online ? 'bg-ok' : 'animate-pulse bg-gold'}`} />
+      {online ? 'Online' : 'Offline'}
+    </span>
+  )
+}
+
+function CheckDisc({ done }: { done: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={`grid h-6 w-6 flex-none place-items-center rounded-full transition ${
+        done ? 'bg-ok text-white' : 'bg-white text-transparent ring-1 ring-inset ring-navy/25'
+      }`}
+    >
+      <TickGlyph />
+    </span>
+  )
+}
+
+function ChevronLeft() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M15 5l-7 7 7 7" />
+    </svg>
+  )
+}
+
+function CameraGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-7 w-7 stroke-gold-soft" fill="none" strokeWidth="1.7" aria-hidden>
       <path d="M3 8a2 2 0 0 1 2-2h2l1.5-2h7L19 6h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
       <circle cx="13" cy="12.5" r="3.5" />
+    </svg>
+  )
+}
+
+function TickGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 fill-none stroke-current" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M4.5 12.5 10 18 19.5 6.5" />
+    </svg>
+  )
+}
+
+function ParcelGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.8" strokeLinejoin="round" aria-hidden>
+      <path d="M12 3 4 7v10l8 4 8-4V7z" />
+      <path d="M4 7l8 4 8-4M12 11v10" />
     </svg>
   )
 }

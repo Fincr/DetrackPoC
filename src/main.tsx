@@ -7,6 +7,7 @@ import { supabaseConfigured } from './lib/supabase.ts'
 import { startSyncTriggers } from './lib/syncWorker.ts'
 import { AllocateScreen } from './screens/AllocateScreen.tsx'
 import { DispatcherScreen } from './screens/DispatcherScreen.tsx'
+import { JobsScreen } from './screens/JobsScreen.tsx'
 import PodCaptureScreen from './components/PodCaptureScreen.tsx'
 
 // Service worker with an explicit update prompt — when a new build is
@@ -39,7 +40,13 @@ function Root() {
   if (hash === '#/pod-demo') return <PodCaptureScreen />
   if (!supabaseConfigured) return <SetupNotice />
   const dispatcher =
-    hash === '#/dispatch' ? <DispatcherScreen /> : hash === '#/allocate' ? <AllocateScreen /> : null
+    hash === '#/dispatch' ? (
+      <DispatcherScreen />
+    ) : hash === '#/allocate' ? (
+      <AllocateScreen />
+    ) : hash === '#/jobs' ? (
+      <JobsScreen />
+    ) : null
   return (
     <>
       {dispatcher ?? <App />}
