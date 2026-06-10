@@ -75,12 +75,29 @@ export function LoginScreen() {
           </button>
         </form>
 
-        {/* Demo credentials — PoC convenience, not for production */}
-        <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-[12px] leading-relaxed text-[#9fb0d6]">
-          <span className="font-semibold text-gold-soft">Demo logins</span> · password{' '}
+        {/* Demo credentials — one tap fills the form (PoC convenience) */}
+        <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3 text-[12px] text-[#9fb0d6]">
+          <span className="font-semibold text-gold-soft">Demo logins</span> — tap to fill · password{' '}
           <span className="font-mono text-white/80">citipost</span>
-          <div className="mt-1 font-mono text-[11.5px]">
-            admin@citipost.test · sam@citipost.test
+          <div className="mt-2 flex gap-2">
+            {[
+              { label: 'Admin', email: 'admin@citipost.test' },
+              { label: 'Driver', email: 'sam@citipost.test' },
+            ].map((d) => (
+              <button
+                key={d.email}
+                type="button"
+                onClick={() => {
+                  setEmail(d.email)
+                  setPassword('citipost')
+                  setError(null)
+                }}
+                className="flex-1 rounded-lg border border-white/15 bg-white/[0.06] px-3 py-2 text-left transition hover:bg-white/10"
+              >
+                <div className="text-[11px] font-bold uppercase tracking-[1px] text-gold-soft">{d.label}</div>
+                <div className="truncate font-mono text-[11px] text-white/80">{d.email}</div>
+              </button>
+            ))}
           </div>
         </div>
       </div>
