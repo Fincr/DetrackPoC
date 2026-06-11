@@ -218,28 +218,17 @@ export async function uploadPod(pod: QueuedPod): Promise<string | null> {
         .update({ status: 'delivered', completed_at: completedAt })
         .eq('id', pod.parcelId)
     } else {
-      // Attempts are DERIVED from the failed POD rows rather than
-      // incremented, so a sync retry of the same pod (idempotent upsert
-      // above) can never double-count an attempt. Counting under the
-      // driver's own RLS scope is fine — a parcel is worked by one route.
-      const { count } = await supabase
-        .from('pod_records')
-        .select('id', { count: 'exact', head: true })
-        .eq('parcel_id', pod.parcelId)
-        .eq('status', 'failed')
-      const attempts = count ?? 1 // includes the row upserted above
-      const terminal = attempts >= MAX_DELIVERY_ATTEMPTS
-      await supabase
-        .from('parcels')
-        .update({
-          attempts,
-          last_failure: pod.failureReason,
-          // A failed attempt doesn't move the lifecycle — the parcel stays at
-          // its current stage (collected / at_warehouse) until it goes
-          // terminal as a return.
-          ...(terminal ? { status: 'returned', completed_at: completedAt } : { completed_at: null }),
-        })
-        .eq('id', pod.parcelId)
+      // Atomic RPC: attempts are DERIVED from the failed POD rows (a sync
+      // retry of the same pod — idempotent upsert above — can never
+      // double-count), and the parcel goes terminal 'returned' at
+      // MAX_DELIVERY_ATTEMPTS. A failed attempt doesn't move the lifecycle —
+      // the parcel stays at its current stage until it returns.
+      const { error: attErr } = await supabase.rpc('apply_failed_attempt', {
+        p_id: pod.parcelId,
+        p_reason: pod.failureReason,
+        p_max: MAX_DELIVERY_ATTEMPTS,
+      })
+      if (attErr) throw new Error(`attempt update failed: ${attErr.message}`)
     }
   }
 

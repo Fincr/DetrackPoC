@@ -65,12 +65,17 @@ Routing:  main.tsx hash router gated by useSession (LoginScreen when signed
   switch, queued in Dexie `events` (v4) and drained by the same sync worker;
   delivery = the full POD capture, whose sync also upserts a `delivered`
   event (id = podId). Ordering is warn-but-allow: events record as scanned,
-  but status only ever advances forward (`STATUS_RANK` guard in
-  `events.ts`), so late syncs can't regress a parcel.
+  but status only ever advances forward via the atomic
+  `advance_parcel_status` RPC (security invoker, rank guard in SQL), so
+  late/concurrent syncs can't regress a parcel. Event INSERT RLS requires
+  the parcel to be on the driver's own route (hardening migration
+  2026-06-11). Tracking export covers the full journey: POD outcomes +
+  collection/warehouse scans, merged chronologically.
 - **Attempt model:** delivered = terminal; failed keeps the parcel at its
-  current lifecycle stage (re-attempt, rolls over) with
-  `parcels.attempts`/`last_failure` updated at sync; at
-  `MAX_DELIVERY_ATTEMPTS` (3) → terminal `'returned'`.
+  current lifecycle stage (re-attempt, rolls over). The
+  `apply_failed_attempt` RPC derives `attempts` from the COUNT of failed
+  pod_records (idempotent — a sync retry can't double-count) and goes
+  terminal `'returned'` at `MAX_DELIVERY_ATTEMPTS` (3).
 - **Geofence:** haversine (geo.ts) between the capture fix and
   `parcels.destination` at capture → `pod_records.dest_distance_m`;
   thresholds 250 m ok / 1 km warn used in capture chip, receipt, dispatcher.

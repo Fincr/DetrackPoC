@@ -10,7 +10,7 @@ import {
   type ParsedManifest,
 } from '../lib/manifest'
 import { supabase } from '../lib/supabase'
-import { buildTrackingCsv, downloadCsv, type TrackingPod } from '../lib/trackingExport'
+import { buildTrackingCsv, downloadCsv, type TrackingPod, type TrackingScan } from '../lib/trackingExport'
 import { STATUS_LABEL, STATUS_RANK, type Manifest, type ParcelStatus } from '../lib/types'
 
 /** The parcel fields the Jobs view needs (a subset of the full row). */
@@ -191,14 +191,34 @@ function ImportCard({ onImported }: { onImported: () => void }) {
     setImporting(true)
     setProblem(null)
     try {
-      const { data: manifest, error: mErr } = await supabase
+      // Re-importing under the same job name UPDATES that job (fresh
+      // imported_at, parcels stay attached) instead of minting a duplicate
+      // job and re-homing the parcels onto it.
+      const name = jobName.trim() || filename || 'Untitled job'
+      const { data: existing } = await supabase
         .from('manifests')
-        .insert({ name: jobName.trim() || filename || 'Untitled job', source_filename: filename })
-        .select()
-        .single()
-      if (mErr) throw new Error(mErr.message)
+        .select('id')
+        .eq('name', name)
+        .maybeSingle()
+      let manifestId: string
+      if (existing) {
+        manifestId = (existing as { id: string }).id
+        const { error: upErr } = await supabase
+          .from('manifests')
+          .update({ imported_at: new Date().toISOString(), source_filename: filename })
+          .eq('id', manifestId)
+        if (upErr) throw new Error(upErr.message)
+      } else {
+        const { data: manifest, error: mErr } = await supabase
+          .from('manifests')
+          .insert({ name, source_filename: filename })
+          .select()
+          .single()
+        if (mErr) throw new Error(mErr.message)
+        manifestId = (manifest as Manifest).id
+      }
 
-      const rows = result.parcels.map((p) => ({ ...p, manifest_id: (manifest as Manifest).id }))
+      const rows = result.parcels.map((p) => ({ ...p, manifest_id: manifestId }))
       // Upsert on the unique tracking_number → re-importing a manifest updates
       // rather than duplicating, and leaves route_id/status untouched.
       const { error: pErr } = await supabase.from('parcels').upsert(rows, { onConflict: 'tracking_number' })
@@ -429,17 +449,32 @@ function JobsList({
     setExporting(job?.id ?? 'all')
     setNote(null)
     onError(null)
-    const { data, error } = await supabase
-      .from('pod_records')
-      .select(
-        'tracking_scanned,status,failure_reason,received_by,captured_at,location, parcel:parcels(tracking_number,area,postcode,manifest_id), site:sites(name,postcode)',
-      )
-      .order('captured_at', { ascending: true })
+    // The full journey: POD outcomes (delivered/attempted) + the
+    // collection/warehouse lifecycle scans, merged chronologically by
+    // buildTrackingCsv. The delivered stage isn't fetched from
+    // parcel_events — its POD row already carries it.
+    const [podRes, evRes] = await Promise.all([
+      supabase
+        .from('pod_records')
+        .select(
+          'tracking_scanned,status,failure_reason,received_by,captured_at,location, parcel:parcels(tracking_number,area,postcode,manifest_id), site:sites(name,postcode)',
+        )
+        .order('captured_at', { ascending: true }),
+      supabase
+        .from('parcel_events')
+        .select(
+          'tracking_scanned,stage,captured_at,location, parcel:parcels(tracking_number,area,postcode,manifest_id)',
+        )
+        .in('stage', ['collection', 'warehouse'])
+        .order('captured_at', { ascending: true }),
+    ])
+    const error = podRes.error ?? evRes.error
     if (error) {
       onError(error.message)
       setExporting(null)
       return
     }
+    type ParcelCtx = { tracking_number: string; area: string | null; postcode: string | null; manifest_id: string | null } | null
     type Row = {
       tracking_scanned: string
       status: TrackingPod['status']
@@ -447,10 +482,17 @@ function JobsList({
       received_by: string | null
       captured_at: string
       location: unknown
-      parcel: { tracking_number: string; area: string | null; postcode: string | null; manifest_id: string | null } | null
+      parcel: ParcelCtx
       site: { name: string; postcode: string | null } | null
     }
-    const pods: TrackingPod[] = (data as unknown as Row[])
+    type EventRow = {
+      tracking_scanned: string
+      stage: TrackingScan['stage']
+      captured_at: string
+      location: unknown
+      parcel: ParcelCtx
+    }
+    const pods: TrackingPod[] = (podRes.data as unknown as Row[])
       .filter((r) => !job || r.parcel?.manifest_id === job.id)
       .map((r) => ({
         parcel_tracking: r.parcel?.tracking_number ?? null,
@@ -465,15 +507,26 @@ function JobsList({
         siteName: r.site?.name ?? null,
         sitePostcode: r.site?.postcode ?? null,
       }))
+    const scans: TrackingScan[] = (evRes.data as unknown as EventRow[])
+      .filter((r) => !job || r.parcel?.manifest_id === job.id)
+      .map((r) => ({
+        parcel_tracking: r.parcel?.tracking_number ?? null,
+        tracking_scanned: r.tracking_scanned,
+        stage: r.stage,
+        captured_at: r.captured_at,
+        location: r.location,
+        area: r.parcel?.area ?? null,
+        postcode: r.parcel?.postcode ?? null,
+      }))
 
-    if (pods.length === 0) {
+    if (pods.length === 0 && scans.length === 0) {
       setNote(`No tracking events captured yet${job ? ` for "${job.name}"` : ''}.`)
       setExporting(null)
       return
     }
     const stamp = new Date().toISOString().slice(0, 10)
     const slug = (job?.name ?? 'all').replace(/[^a-z0-9]+/gi, '-').toLowerCase()
-    downloadCsv(`tracking_${slug}_${stamp}.csv`, buildTrackingCsv(pods))
+    downloadCsv(`tracking_${slug}_${stamp}.csv`, buildTrackingCsv(pods, scans))
     setExporting(null)
   }
 

@@ -1,14 +1,7 @@
 import { db, type QueuedEvent } from './db'
 import { supabase } from './supabase'
 import { emitSync } from './syncEvents'
-import {
-  STAGE_STATUS,
-  STATUS_RANK,
-  type Fix,
-  type Parcel,
-  type ParcelStatus,
-  type Stage,
-} from './types'
+import { STAGE_STATUS, type Fix, type Parcel, type ParcelStatus, type Stage } from './types'
 
 /** Everything a quick stage scan captures (collection / warehouse). */
 export interface StageScan {
@@ -78,15 +71,14 @@ export async function uploadEvent(event: QueuedEvent): Promise<string | null> {
 }
 
 /**
- * Move parcels.status FORWARD only. Events are recorded as scanned even out
- * of order (warn-but-allow), but the status — what every screen shows — can
- * never regress: a late-syncing collection scan leaves a delivered parcel
- * delivered. Read-modify-write is acceptable for this PoC (same pattern as
- * the attempts counter); production would use an RPC.
+ * Move parcels.status FORWARD only, atomically. Events are recorded as
+ * scanned even out of order (warn-but-allow), but the status — what every
+ * screen shows — can never regress: the advance_parcel_status RPC is a
+ * single guarded UPDATE (rank comparison in SQL), so a late-syncing
+ * collection scan leaves a delivered parcel delivered even under
+ * concurrent syncs. SECURITY INVOKER — parcels RLS still applies.
  */
 export async function advanceParcelStatus(parcelId: string, to: ParcelStatus): Promise<void> {
-  const { data } = await supabase.from('parcels').select('status').eq('id', parcelId).single()
-  const current = (data as { status: ParcelStatus } | null)?.status
-  if (!current || STATUS_RANK[to] <= STATUS_RANK[current]) return
-  await supabase.from('parcels').update({ status: to }).eq('id', parcelId)
+  const { error } = await supabase.rpc('advance_parcel_status', { p_id: parcelId, p_to: to })
+  if (error) throw new Error(`status advance failed: ${error.message}`)
 }

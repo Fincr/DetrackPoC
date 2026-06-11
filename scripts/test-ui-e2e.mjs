@@ -115,6 +115,14 @@ await A.waitText('sample-manifest') // the job named after the file
 await pause(800)
 check('U1b job appears with 8 parcels', await A.hasText('8 parcels'))
 
+// Re-import the same file: must UPDATE the existing job, not duplicate it
+const reImport = await admin.$('input[type=file]')
+await reImport.uploadFile(MANIFEST)
+await A.waitText('8 parcels ready')
+await A.clickText('button', 'Import 8 parcels')
+await pause(1500)
+check('U1c re-importing the same manifest does not duplicate the job', await A.hasText('1 job ·'))
+
 await admin.goto(`${BASE}/#/allocate`, { waitUntil: 'networkidle2' })
 await A.waitText('DBM-260610-001') // imported parcels land in the unallocated column
 check(
@@ -304,6 +312,8 @@ const csv = csvFile ? readFileSync(path.join(DOWNLOADS, csvFile), 'utf8') : ''
 check('U11a export downloads a CSV', !!csvFile, csvFile ?? 'no file')
 check('U11b CSV contains the delivered + failed tracking events',
   csv.includes('DBM-260610-001') && csv.includes('DBM-260610-008'))
+check('U11c CSV carries the full journey: collection + warehouse scans too',
+  csv.includes('Evri_COL') && csv.includes('Evri_HUB'))
 
 await browser.close()
 console.log(`\n${pass} passed, ${fail} failed`)

@@ -6,6 +6,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { readFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 
 const env = Object.fromEntries(
   readFileSync('.env', 'utf8')
@@ -55,10 +56,54 @@ console.log('— RLS isolation —')
   check('B1 anonymous sees no parcels', (data ?? []).length === 0)
 }
 
-const { data: allParcels } = await admin.from('parcels').select('*')
 const { data: routes } = await admin.from('routes').select('*')
 const samRoutes = new Set(routes.filter((r) => r.driver_id === 'drv_demo').map((r) => r.id))
 const priyaRoutes = new Set(routes.filter((r) => r.driver_id === 'drv_priya').map((r) => r.id))
+
+// ── fixtures ────────────────────────────────────────────────────────────────
+// The suite creates its OWN parcels and removes them at the end, so it is
+// repeatable: earlier versions mutated seeded parcels into terminal states
+// (delivered/returned), which made every second run fail B6. The service-role
+// key (env var → .env → local CLI, same lookup as seed-auth.mjs) is used only
+// for fixture setup/teardown — every assertion still runs as anon/driver/admin.
+function serviceKey() {
+  if (process.env.SUPABASE_SERVICE_ROLE_KEY) return process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (env.SUPABASE_SERVICE_ROLE_KEY) return env.SUPABASE_SERVICE_ROLE_KEY
+  const tries = [
+    ['node_modules/@supabase/cli-windows-x64/bin/supabase.exe', ['status', '-o', 'env']],
+    ['npx', ['supabase', 'status', '-o', 'env']],
+  ]
+  for (const [cmd, args] of tries) {
+    try {
+      const r = spawnSync(cmd, args, { encoding: 'utf8', shell: process.platform === 'win32' })
+      const m = `${r.stdout ?? ''}${r.stderr ?? ''}`.match(/SERVICE_ROLE_KEY="?([^"\r\n]+)"?/)
+      if (m) return m[1].trim()
+    } catch {
+      /* try the next */
+    }
+  }
+  return null
+}
+const SVC = serviceKey()
+if (!SVC) {
+  console.error('✗ No service-role key. Set SUPABASE_SERVICE_ROLE_KEY (find it via `npx supabase status`).')
+  process.exit(1)
+}
+const svc = createClient(URL, SVC, { auth: { persistSession: false } })
+
+async function mkParcel(tracking, routeId) {
+  const { data, error } = await svc
+    .from('parcels')
+    .insert({ tracking_number: tracking, recipient_name: 'System Test', address_line: '1 Test Way', route_id: routeId })
+    .select()
+    .single()
+  if (error) throw new Error(`fixture ${tracking}: ${error.message}`)
+  return data
+}
+const RUN = Date.now()
+const samParcel = await mkParcel(`TSYS-${RUN}-A`, routes.find((r) => r.driver_id === 'drv_demo').id)
+const failTarget = await mkParcel(`TSYS-${RUN}-B`, routes.find((r) => r.driver_id === 'drv_demo').id)
+const priyaParcel = await mkParcel(`TSYS-${RUN}-P`, routes.find((r) => r.driver_id === 'drv_priya').id)
 
 {
   const { data } = await sam.from('parcels').select('*')
@@ -76,7 +121,6 @@ const priyaRoutes = new Set(routes.filter((r) => r.driver_id === 'drv_priya').ma
   check('B3 sam cannot insert parcels', !!error)
 }
 
-const priyaParcel = allParcels.find((p) => priyaRoutes.has(p.route_id))
 {
   await sam.from('parcels').update({ recipient_name: 'TAMPERED' }).eq('id', priyaParcel.id)
   const { data: after } = await admin.from('parcels').select('recipient_name').eq('id', priyaParcel.id).single()
@@ -92,7 +136,6 @@ const priyaParcel = allParcels.find((p) => priyaRoutes.has(p.route_id))
 // ── B6-B8: lifecycle invariants ─────────────────────────────────────────────
 console.log('— lifecycle —')
 
-const samParcel = allParcels.find((p) => samRoutes.has(p.route_id))
 const POINT = 'POINT(0.16505 51.48132)'
 
 async function insertEvent(client, parcelId, stage, driverId) {
@@ -111,12 +154,10 @@ async function insertEvent(client, parcelId, stage, driverId) {
     { onConflict: 'id' },
   )
 }
-// Mirror of events.ts advanceParcelStatus (forward-only rank guard)
-const RANK = { awaiting_collection: 0, collected: 1, at_warehouse: 2, delivered: 3, returned: 3 }
+// Mirror of events.ts advanceParcelStatus — the atomic forward-only RPC
 async function advance(client, parcelId, to) {
-  const { data } = await client.from('parcels').select('status').eq('id', parcelId).single()
-  if (!data || RANK[to] <= RANK[data.status]) return
-  await client.from('parcels').update({ status: to }).eq('id', parcelId)
+  const { error } = await client.rpc('advance_parcel_status', { p_id: parcelId, p_to: to })
+  if (error) throw new Error(error.message)
 }
 
 {
@@ -133,7 +174,12 @@ async function advance(client, parcelId, to) {
 }
 {
   const { error } = await insertEvent(sam, samParcel.id, 'collection', 'drv_priya')
-  check("B7 sam cannot stamp another driver's id on events", !!error)
+  check("B7a sam cannot stamp another driver's id on events", !!error)
+}
+{
+  // Tightened policy: the parcel must be ON sam's route, not just his driver_id
+  const { error } = await insertEvent(sam, priyaParcel.id, 'collection', 'drv_demo')
+  check("B7b sam cannot record events against another route's parcel", !!error)
 }
 {
   const { data: samEvents } = await sam.from('parcel_events').select('id')
@@ -169,27 +215,16 @@ async function uploadFailedPod(client, podId, parcelId, reason) {
     .select('synced_at')
     .single()
   if (error) throw new Error(error.message)
-  const { count } = await client
-    .from('pod_records')
-    .select('id', { count: 'exact', head: true })
-    .eq('parcel_id', parcelId)
-    .eq('status', 'failed')
-  const attempts = count ?? 1
-  const terminal = attempts >= 3
-  await client
-    .from('parcels')
-    .update({
-      attempts,
-      last_failure: reason,
-      ...(terminal
-        ? { status: 'returned', completed_at: new Date().toISOString() }
-        : { completed_at: null }),
-    })
-    .eq('id', parcelId)
+  // Same call the app makes: the atomic derived-count RPC
+  const { error: attErr } = await client.rpc('apply_failed_attempt', {
+    p_id: parcelId,
+    p_reason: reason,
+    p_max: 3,
+  })
+  if (attErr) throw new Error(attErr.message)
   return rec.synced_at
 }
 
-const failTarget = allParcels.find((p) => samRoutes.has(p.route_id) && p.id !== samParcel.id) ?? samParcel
 const pod1 = randomUUID()
 
 {
@@ -276,6 +311,18 @@ console.log('— delivered event —')
   check('B16 timeline holds warehouse+collection+delivered; parcel delivered',
     stages.includes('warehouse') && stages.includes('collection') && stages.includes('delivered') && p.status === 'delivered',
     stages.join(','))
+}
+
+// ── teardown: remove everything the suite created (service role bypasses
+// RLS — pod_records/parcel_events have no delete policies by design;
+// pod_photos cascade from their pod_records) ─────────────────────────────────
+{
+  const ids = [samParcel.id, failTarget.id, priyaParcel.id]
+  await svc.storage.from('pod-evidence').remove([`${pod1}/label.jpg`])
+  await svc.from('pod_records').delete().in('parcel_id', ids)
+  await svc.from('parcel_events').delete().in('parcel_id', ids)
+  const { error: delErr } = await svc.from('parcels').delete().in('id', ids)
+  check('teardown: fixture parcels removed', !delErr, delErr?.message)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

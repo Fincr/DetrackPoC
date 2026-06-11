@@ -24,11 +24,28 @@ export interface TrackingPod {
   sitePostcode?: string | null
 }
 
+/** A collection/warehouse lifecycle scan, flattened with parcel context.
+ *  (The delivered stage is exported via its POD row, not duplicated here.) */
+export interface TrackingScan {
+  parcel_tracking: string | null
+  tracking_scanned: string
+  stage: 'collection' | 'warehouse'
+  captured_at: string
+  /** EWKB hex from PostgREST (or null when the scan had no fix) */
+  location: unknown
+  area: string | null
+  postcode: string | null
+}
+
 /** Outcome → carrier event. Placeholder Evri-style codes — swap for the real
  *  code list when integrating with a specific carrier. */
 const EVENT: Record<PodStatus, { code: string; description: string }> = {
   delivered: { code: 'Evri_DEL', description: 'Delivered' },
   failed: { code: 'Evri_ATT', description: 'Delivery attempted' },
+}
+const SCAN_EVENT: Record<TrackingScan['stage'], { code: string; description: string }> = {
+  collection: { code: 'Evri_COL', description: 'Collected from sender' },
+  warehouse: { code: 'Evri_HUB', description: 'Arrived at depot' },
 }
 
 const HEADERS = [
@@ -60,23 +77,53 @@ function eventDateTime(iso: string): string {
   )
 }
 
-export function buildTrackingCsv(pods: TrackingPod[], provider = 'Evri'): string {
+export function buildTrackingCsv(
+  pods: TrackingPod[],
+  scans: TrackingScan[] = [],
+  provider = 'Evri',
+): string {
+  // PODs (delivered/attempted) and lifecycle scans (collected/at depot) merge
+  // into one chronological feed — the full journey per parcel.
+  const rows = [
+    ...pods.map((pod) => {
+      const ev = EVENT[pod.status]
+      return {
+        at: pod.captured_at,
+        tracking: pod.parcel_tracking ?? pod.tracking_scanned,
+        code: ev.code,
+        description: ev.description,
+        location: pod.location,
+        place: pod.postcode || pod.area || pod.sitePostcode || pod.siteName || '',
+        info: (pod.status === 'delivered' ? pod.received_by : pod.failure_reason) ?? '',
+      }
+    }),
+    ...scans.map((scan) => {
+      const ev = SCAN_EVENT[scan.stage]
+      return {
+        at: scan.captured_at,
+        tracking: scan.parcel_tracking ?? scan.tracking_scanned,
+        code: ev.code,
+        description: ev.description,
+        location: scan.location,
+        place: scan.postcode || scan.area || '',
+        info: '',
+      }
+    }),
+  ].sort((a, b) => a.at.localeCompare(b.at))
+
   const lines = [`#Provider=${provider}`, HEADERS.join(',')]
-  for (const pod of pods) {
-    const ev = EVENT[pod.status]
-    const pt = parseEwkbPoint(pod.location)
-    const additionalInfo = pod.status === 'delivered' ? pod.received_by : pod.failure_reason
-    const location = pod.postcode || pod.area || pod.sitePostcode || pod.siteName || ''
+  for (const row of rows) {
+    const pt = parseEwkbPoint(row.location)
     lines.push(
       [
-        pod.parcel_tracking ?? pod.tracking_scanned,
-        ev.code,
-        ev.description,
-        eventDateTime(pod.captured_at),
+        row.tracking,
+        row.code,
+        row.description,
+        eventDateTime(row.at),
         pt ? pt.lat.toFixed(5) : '',
         pt ? pt.lng.toFixed(5) : '',
-        location,
-        additionalInfo ?? '',
+        row.place,
+        row.info,
       ]
         .map(csvField)
         .join(','),
