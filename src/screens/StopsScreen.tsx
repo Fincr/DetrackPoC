@@ -288,6 +288,7 @@ export function StopsScreen({
       {sheetOpen && parcels && (
         <ScanSheet
           parcels={parcels}
+          statusOf={effectiveStatus}
           onClose={() => setSheetOpen(false)}
           onMatch={(parcel, value) => {
             setSheetOpen(false)
@@ -308,32 +309,42 @@ interface SessionScan {
   at: Date
   fix: Fix | null
   warning: string | null
+  /** false = nothing was written (e.g. auto-scan of a delivered parcel) */
+  recorded: boolean
 }
 
-const SCAN_MODES: { key: Stage; label: string }[] = [
+type ScanMode = 'auto' | Stage
+const SCAN_MODES: { key: ScanMode; label: string }[] = [
+  { key: 'auto', label: 'Auto' },
   { key: 'collection', label: 'Collect' },
   { key: 'warehouse', label: 'Warehouse' },
   { key: 'delivered', label: 'Deliver' },
 ]
 
 /** Scan sheet (§5): the camera scanner is the primary path — a decoded
- *  barcode auto-selects the matching parcel. The stage switch picks what the
- *  scan MEANS: Collect/Warehouse record a quick lifecycle event on the spot
- *  (timestamp + fresh GPS, batch-friendly — the sheet stays open and logs
- *  each scan); Deliver opens the full evidence capture as before. Type-in
- *  stays as the manual fallback, and unknown values surface clearly. */
+ *  barcode auto-selects the matching parcel. AUTO (the default) is the whole
+ *  lifecycle in one gesture: the system knows each parcel's position, so the
+ *  first scan marks it collected, the next marks it at the warehouse, and
+ *  the final one opens the delivery capture. The explicit stage buttons stay
+ *  as an override for corrections (e.g. re-recording a skipped stage).
+ *  Quick scans stamp time + fresh GPS and keep the sheet open
+ *  (batch-friendly); type-in stays as the manual fallback, and unknown
+ *  values surface clearly. */
 function ScanSheet({
   parcels,
+  statusOf,
   onClose,
   onMatch,
   onStageScan,
 }: {
   parcels: Parcel[]
+  /** Lifecycle position incl. queued (unsynced) scans — drives Auto mode. */
+  statusOf: (p: Parcel) => ParcelStatus
   onClose: () => void
   onMatch: (parcel: Parcel, scannedValue: string) => void
   onStageScan: (parcel: Parcel, scannedValue: string, stage: Stage, fix: Fix | null) => Promise<string | null>
 }) {
-  const [mode, setMode] = useState<Stage>('delivered')
+  const [mode, setMode] = useState<ScanMode>('auto')
   const [value, setValue] = useState('')
   const [unknown, setUnknown] = useState<string | null>(null)
   const [scans, setScans] = useState<SessionScan[]>([])
@@ -341,7 +352,8 @@ function ScanSheet({
   // same real-or-nothing model as the capture screen.
   const { fix, noFixReason, acquiring, getFix, retry } = useGeolocation()
   // The scanner re-fires the same frame several times a second — throttle
-  // repeated values so one label doesn't log/flag repeatedly
+  // repeated values so one label doesn't log/flag repeatedly. In Auto this
+  // also stops a single aim advancing TWO stages back-to-back.
   const lastUnknownRef = useRef({ v: '', t: 0 })
   const lastScanRef = useRef({ v: '', t: 0 })
 
@@ -359,24 +371,57 @@ function ScanSheet({
       return
     }
 
-    if (mode === 'delivered') {
+    // Debounce repeat frames of the same label (and same-aim double-advance
+    // in Auto) before anything is recorded or opened.
+    const now = Date.now()
+    if (lastScanRef.current.v === needle && now - lastScanRef.current.t < 4000) return
+    lastScanRef.current = { v: needle, t: now }
+
+    // What does this scan MEAN? Auto = the parcel's next lifecycle step.
+    let stage: Stage
+    if (mode === 'auto') {
+      const current = statusOf(parcel)
+      if (isTerminal(current)) {
+        // Nothing left to advance — say so instead of silently re-recording
+        navigator.vibrate?.(80)
+        setUnknown(null)
+        setValue('')
+        setScans((prev) =>
+          [
+            {
+              ref: parcel.tracking_number,
+              name: parcel.recipient_name,
+              stage: 'delivered' as Stage,
+              at: new Date(),
+              fix: null,
+              warning: `Already ${STATUS_LABEL[current].toLowerCase()} — nothing recorded. Pick a stage above to force a re-scan.`,
+              recorded: false,
+            },
+            ...prev,
+          ].slice(0, 8),
+        )
+        return
+      }
+      stage = expectedStage(current)
+    } else {
+      stage = mode
+    }
+
+    if (stage === 'delivered') {
       navigator.vibrate?.(80) // tactile "got it" on supporting devices
       onMatch(parcel, needle)
       return
     }
 
-    // Quick stage scan — debounce repeat frames of the same label
-    const now = Date.now()
-    if (lastScanRef.current.v === `${mode}:${needle}` && now - lastScanRef.current.t < 4000) return
-    lastScanRef.current = { v: `${mode}:${needle}`, t: now }
+    // Quick stage scan
     navigator.vibrate?.(80)
     setUnknown(null)
     setValue('')
     const at = new Date()
     const scanFix = await getFix() // fresh read so the event is located where scanned
-    const warning = await onStageScan(parcel, needle, mode, scanFix)
+    const warning = await onStageScan(parcel, needle, stage, scanFix)
     setScans((prev) =>
-      [{ ref: parcel.tracking_number, name: parcel.recipient_name, stage: mode, at, fix: scanFix, warning }, ...prev].slice(0, 8),
+      [{ ref: parcel.tracking_number, name: parcel.recipient_name, stage, at, fix: scanFix, warning, recorded: true }, ...prev].slice(0, 8),
     )
   }
 
@@ -389,14 +434,15 @@ function ScanSheet({
         className="flex-1 overflow-y-auto rounded-t-[22px] bg-paper p-[18px] pb-[max(24px,env(safe-area-inset-bottom))] sm:max-h-[88vh] sm:w-full sm:max-w-md sm:flex-none sm:rounded-[22px] sm:p-6 sm:shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* What does this scan MEAN — the lifecycle stage being recorded */}
-        <div className="mb-3 grid grid-cols-3 gap-1 rounded-[12px] border border-line bg-white p-1">
+        {/* What does this scan MEAN — Auto follows the lifecycle; the stage
+            buttons override it for corrections */}
+        <div className="mb-3 grid grid-cols-4 gap-1 rounded-[12px] border border-line bg-white p-1">
           {SCAN_MODES.map((m) => (
             <button
               key={m.key}
               type="button"
               onClick={() => setMode(m.key)}
-              className={`rounded-[9px] px-2 py-2 text-[12.5px] font-semibold transition ${
+              className={`rounded-[9px] px-1 py-2 text-[12px] font-semibold transition ${
                 mode === m.key ? 'bg-navy text-white' : 'text-muted hover:text-ink'
               }`}
             >
@@ -405,9 +451,11 @@ function ScanSheet({
           ))}
         </div>
         <p className="mb-2 text-[11.5px] leading-snug text-muted">
-          {mode === 'delivered'
-            ? 'Scanning opens the full delivery capture (photo, signature, outcome).'
-            : `Quick scan — each label is stamped ${mode === 'collection' ? 'collected' : 'at warehouse'} with time + GPS. Keep scanning, the sheet stays open.`}
+          {mode === 'auto'
+            ? 'One scan per step: first scan marks the parcel collected, the next at the warehouse, the final one opens the delivery capture.'
+            : mode === 'delivered'
+              ? 'Scanning opens the full delivery capture (photo, signature, outcome).'
+              : `Quick scan — each label is stamped ${mode === 'collection' ? 'collected' : 'at warehouse'} with time + GPS. Keep scanning, the sheet stays open.`}
         </p>
 
         <BarcodeScanner onDecode={(v) => void tryMatch(v, 'scan')} />
@@ -459,20 +507,27 @@ function ScanSheet({
         {scans.length > 0 && (
           <div className="mt-2.5 flex flex-col gap-1.5">
             {scans.map((s, i) => (
-              <div key={`${s.ref}-${s.at.getTime()}`} className={`rounded-[11px] border px-3 py-2 ${i === 0 ? 'border-ok/40 bg-ok/10' : 'border-line bg-white'}`}>
+              <div
+                key={`${s.ref}-${s.at.getTime()}`}
+                className={`rounded-[11px] border px-3 py-2 ${
+                  !s.recorded ? 'border-gold/40 bg-gold/10' : i === 0 ? 'border-ok/40 bg-ok/10' : 'border-line bg-white'
+                }`}
+              >
                 <div className="flex items-baseline justify-between gap-2 text-[12.5px]">
                   <span className="min-w-0 truncate">
-                    <span className="font-bold text-ok">✓</span>{' '}
+                    {s.recorded && <span className="font-bold text-ok">✓ </span>}
                     <span className="font-mono text-[12px] tracking-[0.5px] text-navy-500">{s.ref}</span>{' '}
-                    <span className="font-semibold text-ink">{STAGE_LABEL[s.stage]}</span>
+                    {s.recorded && <span className="font-semibold text-ink">{STAGE_LABEL[s.stage]}</span>}
                   </span>
                   <span className="flex-none tabular-nums text-[11.5px] text-muted">
                     {s.at.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                   </span>
                 </div>
-                <div className="text-[11px] text-muted">
-                  {s.fix ? `${s.fix.lat.toFixed(5)}, ${s.fix.lng.toFixed(5)}${s.fix.accuracyM != null ? ` ±${s.fix.accuracyM}m` : ''}` : 'no GPS fix recorded'}
-                </div>
+                {s.recorded && (
+                  <div className="text-[11px] text-muted">
+                    {s.fix ? `${s.fix.lat.toFixed(5)}, ${s.fix.lng.toFixed(5)}${s.fix.accuracyM != null ? ` ±${s.fix.accuracyM}m` : ''}` : 'no GPS fix recorded'}
+                  </div>
+                )}
                 {s.warning && <div className="mt-0.5 text-[11.5px] font-semibold text-[#9a6a00]">⚠ {s.warning}</div>}
               </div>
             ))}
@@ -503,7 +558,7 @@ function ScanSheet({
             onClick={() => void tryMatch(value, 'type')}
             className="flex-1 rounded-[11px] bg-navy p-[11px] font-serif text-[15px] text-white"
           >
-            {mode === 'delivered' ? 'Find parcel' : 'Record scan'}
+            {mode === 'auto' ? 'Scan parcel' : mode === 'delivered' ? 'Find parcel' : 'Record scan'}
           </button>
         </div>
       </div>
