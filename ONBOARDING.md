@@ -88,16 +88,20 @@ Architecture details, invariants, and design tokens: `CLAUDE.md`.
 
 ---
 
-## 3. Cloud assets (what you need from George)
+## 3. Cloud assets (all self-service — nothing needed from George)
 
-### Hosted Supabase (project ref `ydhypslunoybvwoslyss`)
+### Hosted Supabase — create your own (10 minutes, free tier)
 
-The deployed app points at a hosted Supabase project on George's account.
-Either get **invited to the org / have the project transferred** (Supabase
-dashboard → Project Settings), or create your own project and set it up from
-the repo: run `supabase/cloud-setup.sql` in the SQL editor, then any
-`supabase/cloud-update-*.sql` scripts newer than it, then create the demo
-logins:
+George's hosted project can't be shared (team members are a paid Supabase
+feature), and the data in it is throwaway demo seed anyway — so you create
+your own:
+
+1. supabase.com → New project (free tier is fine). Note the **project URL**
+   and, under Settings → API, the **anon key** and **service-role key**.
+2. SQL Editor → paste the whole of **`supabase/cloud-setup.sql`** → Run.
+   It's the complete schema + RLS + storage + demo seed in one script
+   (idempotent — safe to re-run).
+3. Create the demo logins:
 
 ```powershell
 $env:SUPABASE_URL = "https://<your-ref>.supabase.co"
@@ -105,12 +109,8 @@ $env:SUPABASE_SERVICE_ROLE_KEY = "<service role key from dashboard>"
 node scripts/seed-auth.mjs
 ```
 
-⚠️ If you inherit the existing project, check the `cloud-update-*.sql` scripts
-have all been applied — at the time of writing at least `cloud-update-sites.sql`
-and `cloud-update-hardening.sql` were outstanding.
-
-The **service-role key** (dashboard → Settings → API) is the only real secret
-in this project. It never goes in git or in `.env` committed anywhere.
+That's a fully working backend. The **service-role key** is the only real
+secret in this project — it never goes in git or any committed `.env`.
 
 ### Vercel
 
@@ -119,8 +119,8 @@ The current Vercel project is **not git-connected** — deploys were manual via
 account (New Project → Import), set two environment variables:
 
 ```
-VITE_SUPABASE_URL       = https://<ref>.supabase.co
-VITE_SUPABASE_ANON_KEY  = <anon/publishable key from the Supabase dashboard>
+VITE_SUPABASE_URL       = https://<your-ref>.supabase.co
+VITE_SUPABASE_ANON_KEY  = <anon key from YOUR Supabase project>
 ```
 
 …and every push to `master` will auto-deploy. (The anon key is publishable —
