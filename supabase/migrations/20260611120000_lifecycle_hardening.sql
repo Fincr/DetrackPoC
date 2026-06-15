@@ -27,7 +27,7 @@ create policy parcel_events_insert on parcel_events for insert
 
 -- 2a. Lifecycle order, shared by the advance guard
 create or replace function public.status_rank(s text) returns int
-  language sql immutable as $$
+  language sql immutable set search_path = public as $$
   select case s
     when 'awaiting_collection' then 0
     when 'collected'           then 1
@@ -42,7 +42,7 @@ $$;
 --     a delivered parcel, and concurrent advances can't interleave (single
 --     statement, row-level lock).
 create or replace function public.advance_parcel_status(p_id uuid, p_to text) returns void
-  language sql security invoker as $$
+  language sql security invoker set search_path = public as $$
   update parcels
      set status = p_to
    where id = p_id
@@ -55,7 +55,7 @@ $$;
 --     caller's RLS (a driver counts their own pods; a parcel is worked by one
 --     route, so that's the full picture).
 create or replace function public.apply_failed_attempt(p_id uuid, p_reason text, p_max int) returns void
-  language plpgsql security invoker as $$
+  language plpgsql security invoker set search_path = public as $$
 declare
   n int;
 begin

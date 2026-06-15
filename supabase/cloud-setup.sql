@@ -165,7 +165,7 @@ create or replace function public.is_admin() returns boolean
 
 -- ── atomic status transitions ────────────────────────────────────────────────
 create or replace function public.status_rank(s text) returns int
-  language sql immutable as $$
+  language sql immutable set search_path = public as $$
   select case s
     when 'awaiting_collection' then 0
     when 'collected'           then 1
@@ -179,7 +179,7 @@ $$;
 -- Forward-only advance: a late-syncing scan can never regress a parcel.
 -- SECURITY INVOKER — parcels RLS still applies to the caller.
 create or replace function public.advance_parcel_status(p_id uuid, p_to text) returns void
-  language sql security invoker as $$
+  language sql security invoker set search_path = public as $$
   update parcels
      set status = p_to
    where id = p_id
@@ -189,7 +189,7 @@ $$;
 -- Failed delivery attempt: attempts DERIVED from failed POD rows (a sync retry
 -- of the same pod can't double-count); terminal 'returned' at p_max.
 create or replace function public.apply_failed_attempt(p_id uuid, p_reason text, p_max int) returns void
-  language plpgsql security invoker as $$
+  language plpgsql security invoker set search_path = public as $$
 declare
   n int;
 begin
