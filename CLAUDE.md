@@ -1,18 +1,20 @@
-# ePOD PoC — project conventions
+# Citipost ePOD — project conventions
 
-A complete proof-of-concept for Electronic Proof of Delivery. The brief is
-`epod-poc-claude-code-brief.md`; the canonical driver-app look is
-`design-reference.html` (open it — match it, don't approximate it). The
-acceptance-test walkthrough is `DEMO.md`.
+Electronic Proof of Delivery — a production driver PWA + dispatcher portal.
+Originally built to `epod-poc-claude-code-brief.md`; the original driver-app
+look is `design-reference.html` (since superseded by the "Freight Modern" theme
+— see Design tokens). Setup and the access model live in `README.md`.
 
 ## Ground rules
 
-- **PoC, not production.** Convincing runnable demo > completeness. Auth is
-  real but demo-grade: Supabase Auth sign-in portal, seeded logins (admin +
-  3 drivers, password `citipost`, created by `scripts/seed-auth.mjs` — rerun
-  after every `db reset`), RLS on every table (`profiles` maps user → role +
-  driver_id; drivers see only their route's parcels/PODs, dispatch is
-  admin-only), private `pod-evidence` bucket. No multi-tenancy.
+- **Auth & access.** Supabase Auth sign-in portal; accounts + profiles are
+  provisioned out-of-band (`scripts/seed-auth.mjs` — rerun after every local
+  `db reset`; password via `SEED_PASSWORD`). RLS on every table (`profiles`
+  maps user → role + driver_id; drivers see only their route's parcels/PODs;
+  dispatch is admin-only; `profiles` has no insert/update policy, so a
+  signed-in user can't self-escalate). Private `pod-evidence` bucket
+  (signed-URL reads). No multi-tenancy. Ships with no seed data — empty fleet
+  until one is provisioned (`supabase/seed.sql` template).
 - Keep logic commented where non-obvious: overlay maths (`stamp.ts`), sync
   idempotency (`pod.ts`/`syncWorker.ts`), GPS acquisition (`useGeolocation.ts`),
   EWKB parsing (`geo.ts`).
@@ -104,10 +106,9 @@ Routing:  main.tsx hash router gated by useSession (LoginScreen when signed
 
 - `parcels` — tracking_number unique (the barcode value), recipient/address,
   `destination geography(point,4326)`, area, status, `due_date` (the run the
-  parcel belongs to); seeded with 8 UK parcels (`CP-849213-GB` = the
-  design-reference parcel; `CP-100003-GB` is seeded due yesterday to demo
-  rollover). **Rollover is derived**: pending AND due_date < today → badge +
-  sorted first (order by due_date) — no nightly job.
+  parcel belongs to). No seed data — parcels are created via the dispatcher's
+  manifest import. **Rollover is derived**: pending AND due_date < today →
+  badge + sorted first (order by due_date) — no nightly job.
 - `pod_records` — client UUID pk, parcel_id FK, tracking_scanned, status
   (delivered|failed), failure_reason (check: required when failed),
   received_by, captured_at, synced_at (default now()), location geography,
@@ -130,8 +131,7 @@ Routing:  main.tsx hash router gated by useSession (LoginScreen when signed
 - Type (self-hosted @fontsource, offline-safe): **Barlow Condensed rides the
   `font-serif` utility** (display/titles/buttons — index.css bumps it to 600);
   Barlow = body; IBM Plex Mono = tracking numbers, JSON. Section labels: 11px
-  uppercase tracked muted bold. `#/pod-demo` (PodCaptureScreen) still carries
-  the old navy/gold palette — standalone demo, restyle separately if needed.
+  uppercase tracked muted bold.
 - Responsive shell (`AppShell`): edge-to-edge on mobile (min-h-dvh,
   safe-area-aware top bar/badge/footer), centred ~430px elevated column on
   the navy gradient for laptop. No mockup chrome — this is the product UI.
@@ -145,7 +145,7 @@ Routing:  main.tsx hash router gated by useSession (LoginScreen when signed
 npm run dev                  # vite dev server
 npm run build                # tsc -b && vite build (run before committing)
 npx supabase start|stop      # local stack (Docker)
-npx supabase db reset        # re-apply migrations + seed (wipes auth users!)
-node scripts/seed-auth.mjs   # recreate demo logins — required after db reset
+npx supabase db reset        # re-apply migrations (empty seed; wipes auth users!)
+node scripts/seed-auth.mjs   # recreate accounts — required after db reset
 node scripts/smoke-db.mjs    # stack/seed/RLS/bucket/idempotency smoke test
 ```

@@ -11,7 +11,6 @@ import { DispatcherScreen } from './screens/DispatcherScreen.tsx'
 import { JobsScreen } from './screens/JobsScreen.tsx'
 import { LoginScreen } from './screens/LoginScreen.tsx'
 import { SitesScreen } from './screens/SitesScreen.tsx'
-import PodCaptureScreen from './components/PodCaptureScreen.tsx'
 
 // Service worker with an explicit update prompt — when a new build is
 // waiting, Root shows a toast instead of serving the stale version once.
@@ -51,8 +50,6 @@ function Root() {
     }
   }, [profile, isAdmin, hash])
 
-  // Standalone single-file component demo — no backend needed
-  if (hash === '#/pod-demo') return <PodCaptureScreen />
   if (!supabaseConfigured) return <SetupNotice />
   if (loading) return <Splash />
   if (!session) return <LoginScreen />

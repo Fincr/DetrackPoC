@@ -17,7 +17,7 @@ export default defineConfig(({ mode }) => ({
       registerType: 'prompt',
       includeAssets: ['icon.svg'],
       manifest: {
-        name: 'ePOD Capture',
+        name: 'Citipost ePOD',
         short_name: 'ePOD',
         description: 'Electronic Proof of Delivery — driver evidence capture',
         theme_color: '#0e1218',

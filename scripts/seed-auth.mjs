@@ -1,14 +1,16 @@
-// Seed demo auth users + profiles. Run AFTER `supabase db reset` (which wipes
-// auth users and re-seeds drivers/routes). Idempotent — re-running only fills
-// gaps. auth.users can't be seeded reliably from plain SQL, so we use the
-// admin API with the service-role key.
+// Seed auth users + profiles. Run AFTER `supabase db reset` (which wipes auth
+// users). Idempotent — re-running only fills gaps and never overwrites an
+// existing account's password. auth.users can't be seeded reliably from plain
+// SQL, so we use the admin API with the service-role key.
 //
 //   Local:  node scripts/seed-auth.mjs           (key auto-read from `supabase status`)
 //   Hosted: SUPABASE_URL=https://<ref>.supabase.co \
 //           SUPABASE_SERVICE_ROLE_KEY=<service key> node scripts/seed-auth.mjs
 //
-// The service-role key is NEVER hardcoded (it must not live in git). Locally it
-// comes from the running stack; for a host, pass it via the env vars above.
+// Password comes from SEED_PASSWORD (defaults to a local-dev value); set it
+// explicitly when seeding a real environment. The service-role key is NEVER
+// hardcoded (it must not live in git) — locally it comes from the running
+// stack; for a host, pass it via the env vars above.
 import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createClient } from '@supabase/supabase-js'
@@ -47,14 +49,13 @@ if (!SERVICE_KEY) {
   process.exit(1)
 }
 
-const PASSWORD = 'citipost' // demo only (min length 6)
+const PASSWORD = process.env.SEED_PASSWORD || 'localdev' // min length 6; override via SEED_PASSWORD
 
-// driverId must match supabase/seed.sql drivers; admin has none.
+// Accounts to ensure exist. driverId is null until a real fleet is provisioned
+// (see supabase/seed.sql); point a driver at their driver id afterwards.
 const ACCOUNTS = [
-  { email: 'admin@citipost.test', role: 'admin', driverId: null, fullName: 'Dispatch Admin' },
-  { email: 'sam@citipost.test', role: 'driver', driverId: 'drv_demo', fullName: 'Sam Okafor' },
-  { email: 'priya@citipost.test', role: 'driver', driverId: 'drv_priya', fullName: 'Priya Nair' },
-  { email: 'dan@citipost.test', role: 'driver', driverId: 'drv_dan', fullName: 'Dan Whitlock' },
+  { email: 'fcrawley@citipost.co.uk', role: 'admin', driverId: null, fullName: 'Finlay Crawley' },
+  { email: 'fcrawley+driver@citipost.co.uk', role: 'driver', driverId: null, fullName: 'Finlay Crawley' },
 ]
 
 const supabase = createClient(URL_, SERVICE_KEY, {

@@ -23,5 +23,7 @@ export const supabase = createClient(
   anonKey || 'unconfigured',
 )
 
-/** Storage bucket holding photos + signatures (public read in this PoC). */
+/** Storage bucket holding photos + signatures. Private: signed-in read/insert
+ *  only (RLS on storage.objects); the dispatcher views evidence via short-lived
+ *  signed URLs (DispatcherScreen `createSignedUrls`). */
 export const EVIDENCE_BUCKET = 'pod-evidence'

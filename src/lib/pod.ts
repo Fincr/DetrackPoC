@@ -234,8 +234,3 @@ export async function uploadPod(pod: QueuedPod): Promise<string | null> {
 
   return (record as { synced_at: string | null } | null)?.synced_at ?? null
 }
-
-/** Public URL for an object in the evidence bucket (public in this PoC). */
-export function evidenceUrl(path: string): string {
-  return supabase.storage.from(EVIDENCE_BUCKET).getPublicUrl(path).data.publicUrl
-}

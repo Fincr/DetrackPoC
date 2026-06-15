@@ -105,7 +105,7 @@ create table if not exists pod_records (
   gps_source      text check (gps_source in ('photo_exif','device','simulated')),
   dest_distance_m int,                       -- geofence: metres from destination at capture
   signature_path  text,
-  driver_id       text default 'drv_demo',
+  driver_id       text,
   created_at      timestamptz default now(),
   constraint failed_needs_reason check (status <> 'failed' or failure_reason is not null)
 );
@@ -311,63 +311,9 @@ exception when duplicate_object then null; when undefined_object then null; end 
 do $$ begin alter publication supabase_realtime add table parcel_events;
 exception when duplicate_object then null; when undefined_object then null; end $$;
 
--- ── demo seed (mirrors supabase/seed.sql) ────────────────────────────────────
--- 3 drivers, one English region each.
-insert into drivers (id, name) values
-  ('drv_demo',  'Sam Okafor'),
-  ('drv_priya', 'Priya Nair'),
-  ('drv_dan',   'Dan Whitlock')
-on conflict (id) do nothing;
-
-insert into routes (name, driver_id, areas) values
-  ('Greater London', 'drv_demo',  array['Greater London']),
-  ('South East',     'drv_priya', array['South East']),
-  ('North West',     'drv_dan',   array['North West'])
-on conflict (name) do nothing;
-
--- 8 parcels across the three regions. CP-849213-GB = the design-reference parcel.
-insert into parcels (tracking_number, recipient_name, address_line, postcode, destination, area) values
-  ('CP-849213-GB', 'Meridian Logistics',          'Unit 4, Hailey Road Industrial Estate, Erith', 'DA18 4AA',
-   st_setsrid(st_makepoint(0.17700, 51.48400), 4326)::geography, 'Greater London'),
-  ('CP-100002-GB', 'Patricia Holloway',           '14 Larkspur Close, Maidstone',                 'ME14 9QT',
-   st_setsrid(st_makepoint(0.53940, 51.28790), 4326)::geography, 'South East'),
-  ('CP-100003-GB', 'Dev & Sons Hardware',         '88 Roman Road, Bethnal Green, London',         'E2 0QJ',
-   st_setsrid(st_makepoint(-0.04900, 51.53090), 4326)::geography, 'Greater London'),
-  ('CP-200004-GB', 'Brightwell Imports Ltd',      '22 Deansgate, Manchester',                     'M3 2BW',
-   st_setsrid(st_makepoint(-2.24860, 53.47950), 4326)::geography, 'North West'),
-  ('CP-200005-GB', 'Atlantique Wines (UK)',       '8 Marine Parade, Brighton',                    'BN2 1TL',
-   st_setsrid(st_makepoint(-0.13720, 50.81980), 4326)::geography, 'South East'),
-  ('CP-300006-GB', 'Acme Home Goods — J. Mercer', '3 Dale Street, Liverpool',                     'L2 2HF',
-   st_setsrid(st_makepoint(-2.98800, 53.40840), 4326)::geography, 'North West'),
-  ('CP-300007-GB', 'Tillys Toy Shop',             '27 Deansgate, Bolton',                         'BL1 1BL',
-   st_setsrid(st_makepoint(-2.42820, 53.57800), 4326)::geography, 'North West'),
-  ('CP-400008-GB', 'Thames Valley Depot',         'Unit 9, Saddlers Way, Reading',                'RG1 1AX',
-   st_setsrid(st_makepoint(-0.97810, 51.45430), 4326)::geography, 'South East')
-on conflict (tracking_number) do nothing;
-
--- One stop left over from yesterday's run → visible ROLLOVER on first load.
-update parcels set due_date = current_date - 1 where tracking_number = 'CP-100003-GB';
-
--- Allocate by region, leaving two unallocated so the dispatcher can demo
--- manual + auto allocation.
-update parcels p set route_id = r.id
-  from routes r
-  where p.area = any (r.areas)
-    and p.route_id is null
-    and p.tracking_number not in ('CP-100002-GB', 'CP-300007-GB');
-
--- Sites: one per region route + one unallocated (guarded by name on re-runs).
-insert into sites (name, address_line, postcode, kind, destination, route_id)
-select v.name, v.address_line, v.postcode, v.kind,
-       st_setsrid(st_makepoint(v.lng, v.lat), 4326)::geography,
-       (select id from routes r where r.name = v.route_name)
-from (values
-  ('Citipost Collect — Camden',  '112 Camden High Street, London',         'NW1 0LU', 'store', -0.14260, 51.53900, 'Greater London'),
-  ('Gatwick Parcel Depot',       'Beehive Ring Road, Gatwick, Crawley',    'RH6 0PA', 'depot', -0.18210, 51.15370, 'South East'),
-  ('Trafford Park Fulfilment',   'Mosley Road, Trafford Park, Manchester', 'M17 1AB', 'both',  -2.32000, 53.46700, 'North West'),
-  ('Citipost Collect — Reading', '5 Broad Street, Reading',                'RG1 2BH', 'store', -0.97500, 51.45520, null)
-) as v(name, address_line, postcode, kind, lng, lat, route_name)
-where not exists (select 1 from sites s where s.name = v.name);
-
--- Done. Now create the demo logins (admin + 3 drivers, password "citipost"):
+-- ── seed ─────────────────────────────────────────────────────────────────────
+-- Production: no seed data. The app starts with no fleet and no parcels.
+-- Provision drivers/routes per the template in supabase/seed.sql, import
+-- parcels via the dispatcher's Jobs → "Import a manifest", and create auth
+-- accounts out-of-band:
 --   node scripts/seed-auth.mjs   (with SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY set)

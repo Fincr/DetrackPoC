@@ -542,7 +542,7 @@ function ScanSheet({
             setUnknown(null)
           }}
           onKeyDown={(e) => e.key === 'Enter' && void tryMatch(value, 'type')}
-          placeholder="CP-849213-GB"
+          placeholder="Tracking number"
           className="w-full rounded-[11px] border border-line bg-white px-3 py-[11px] font-mono text-sm uppercase tracking-[1px] text-ink focus:border-navy-500 focus:outline-none focus:ring-[3px] focus:ring-navy-500/10"
         />
         <div className="mt-3 flex gap-2">
