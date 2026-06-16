@@ -12,12 +12,11 @@ import { supabase } from '../../lib/supabase'
 import type { Driver } from '../../lib/types'
 import { Banner, BTN_DANGER, BTN_GHOST, BTN_PRIMARY, Card, Field, INPUT, Pill } from './ui'
 
-const NEW_DRIVER = '__new__'
-
 /** Manage Logins + Profiles (see CONTEXT.md). All writes go through the
  *  admin Edge Function (service-role, admin-gated) — the browser never holds
- *  the service key. Roster rows for inline "+ New driver" are created
- *  client-side first (admins pass the drivers RLS policy), then linked. */
+ *  the service key. A driver login mints its roster entry from the full name
+ *  client-side first (admins pass the drivers RLS policy), then links it;
+ *  re-linking to an *existing* roster entry is a Manage-panel action. */
 export function UsersPanel({ drivers, reloadFleet }: { drivers: Driver[]; reloadFleet: () => void }) {
   const [users, setUsers] = useState<AdminUser[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -31,8 +30,6 @@ export function UsersPanel({ drivers, reloadFleet }: { drivers: Driver[]; reload
   const [usernameEdited, setUsernameEdited] = useState(false)
   const [email, setEmail] = useState('') // admins
   const [password, setPassword] = useState('')
-  const [driverId, setDriverId] = useState('')
-  const [newDriverName, setNewDriverName] = useState('')
   const [busy, setBusy] = useState(false)
 
   // Suggest the username from the full name (first initial + surname) until the
@@ -61,25 +58,23 @@ export function UsersPanel({ drivers, reloadFleet }: { drivers: Driver[]; reload
     setOk(null)
     // Drivers identify by username; admins by email.
     const cleanUsername = normalizeUsername(username)
+    const cleanName = fullName.trim()
     if (role === 'driver' && !cleanUsername) return setError('Enter a username (first initial + surname, e.g. FCrawley)')
+    if (role === 'driver' && !cleanName)
+      return setError('Enter the driver’s full name — it becomes their roster name (shown on every delivery)')
     if (role === 'admin' && !email.trim()) return setError('Email is required for an admin login')
     if (password.length < 8) return setError('Set a password of at least 8 characters (use Generate)')
 
+    // A driver login mints its own roster entry, named from the full name (the
+    // identity stamped on their deliveries — one entry per person). Linking to
+    // an *existing* roster entry is the Manage panel's job (rare re-issue case).
     let linkedDriver: string | null = null
     if (role === 'driver') {
-      if (driverId === NEW_DRIVER) {
-        const trimmed = newDriverName.trim()
-        if (!trimmed) return setError('Enter the new driver’s name')
-        const id = makeDriverId(trimmed)
-        const { error: dErr } = await supabase.from('drivers').insert({ id, name: trimmed })
-        if (dErr) return setError(`Couldn’t create roster driver: ${dErr.message}`)
-        linkedDriver = id
-        reloadFleet()
-      } else if (driverId) {
-        linkedDriver = driverId
-      } else {
-        return setError('Pick a roster driver (or add a new one) for a driver login')
-      }
+      const id = makeDriverId(cleanName)
+      const { error: dErr } = await supabase.from('drivers').insert({ id, name: cleanName })
+      if (dErr) return setError(`Couldn’t create roster driver: ${dErr.message}`)
+      linkedDriver = id
+      reloadFleet()
     }
 
     const handle = role === 'driver' ? cleanUsername : email.trim()
@@ -90,7 +85,7 @@ export function UsersPanel({ drivers, reloadFleet }: { drivers: Driver[]; reload
         password,
         role,
         driver_id: linkedDriver,
-        full_name: fullName.trim() || null,
+        full_name: cleanName || null,
       })
       setOk(`Created ${handle} — password: ${password}  (copy it now; it isn’t stored)`)
       setFullName('')
@@ -99,8 +94,6 @@ export function UsersPanel({ drivers, reloadFleet }: { drivers: Driver[]; reload
       setUsernameEdited(false)
       setEmail('')
       setPassword('')
-      setDriverId('')
-      setNewDriverName('')
       await load()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not create user')
@@ -112,7 +105,10 @@ export function UsersPanel({ drivers, reloadFleet }: { drivers: Driver[]; reload
     <div className="grid items-start gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
       <Card title="Add a user" sticky>
         <form onSubmit={addUser} className="grid gap-3 p-4">
-          <Field label="Full name">
+          <Field
+            label="Full name"
+            hint={role === 'driver' ? 'Becomes their roster name — the identity shown on every delivery.' : undefined}
+          >
             <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Sam Lee" className={INPUT} />
           </Field>
           <Field label="Role">
@@ -152,28 +148,6 @@ export function UsersPanel({ drivers, reloadFleet }: { drivers: Driver[]; reload
             </Field>
           )}
 
-          {role === 'driver' && (
-            <Field label="Driver (roster)" hint="The fleet identity their deliveries attribute to.">
-              <select value={driverId} onChange={(e) => setDriverId(e.target.value)} className={INPUT}>
-                <option value="">Select a driver…</option>
-                {drivers.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-                <option value={NEW_DRIVER}>+ New driver…</option>
-              </select>
-              {driverId === NEW_DRIVER && (
-                <input
-                  value={newDriverName}
-                  onChange={(e) => setNewDriverName(e.target.value)}
-                  placeholder="New driver’s name"
-                  className={`${INPUT} mt-2`}
-                />
-              )}
-            </Field>
-          )}
-
           <Field label="Temporary password" hint="Shown once after you create the login — pass it to the user.">
             <div className="flex gap-2">
               <input
@@ -194,7 +168,7 @@ export function UsersPanel({ drivers, reloadFleet }: { drivers: Driver[]; reload
 
           <button
             type="submit"
-            disabled={busy || (role === 'driver' ? !normalizeUsername(username) : !email.trim())}
+            disabled={busy || (role === 'driver' ? !normalizeUsername(username) || !fullName.trim() : !email.trim())}
             className={`w-full ${BTN_PRIMARY}`}
           >
             {busy ? 'Creating…' : 'Create user'}
@@ -219,6 +193,7 @@ export function UsersPanel({ drivers, reloadFleet }: { drivers: Driver[]; reload
               drivers={drivers}
               isSelf={u.id === meId}
               reload={load}
+              reloadFleet={reloadFleet}
               onError={setError}
               onOk={setOk}
             />
@@ -234,6 +209,7 @@ function UserRow({
   drivers,
   isSelf,
   reload,
+  reloadFleet,
   onError,
   onOk,
 }: {
@@ -241,6 +217,7 @@ function UserRow({
   drivers: Driver[]
   isSelf: boolean
   reload: () => Promise<void>
+  reloadFleet: () => void
   onError: (m: string | null) => void
   onOk: (m: string | null) => void
 }) {
@@ -273,13 +250,23 @@ function UserRow({
       const cleanUsername = normalizeUsername(username)
       if (canRenameUsername && !cleanUsername) throw new Error('Username can’t be empty')
       const renaming = canRenameUsername && cleanUsername !== user.username
+      const cleanName = fullName.trim()
       await adminInvoke('update_user', {
         id: user.id,
         role,
         driver_id: role === 'driver' ? driverId : null,
-        full_name: fullName.trim() || null,
+        full_name: cleanName || null,
         ...(renaming ? { username: cleanUsername } : {}),
       })
+      // Full Name is the single source of truth for a driver's own roster name:
+      // keep them in sync. Only when the link is unchanged though — re-linking
+      // to a different existing roster entry must not clobber that entry's name.
+      const linkUnchanged = driverId === (user.driver_id ?? '')
+      if (role === 'driver' && driverId && linkUnchanged && cleanName && cleanName !== user.driver_name) {
+        const { error } = await supabase.from('drivers').update({ name: cleanName }).eq('id', driverId)
+        if (error) throw new Error(`Saved the login, but couldn’t rename the roster entry: ${error.message}`)
+        reloadFleet()
+      }
       onOk(`Updated ${renaming ? cleanUsername : (user.username ?? user.email)}`)
       setOpen(false)
       await reload()
@@ -367,7 +354,10 @@ function UserRow({
             </select>
           </Field>
           {role === 'driver' && (
-            <Field label="Driver (roster)">
+            <Field
+              label="Driver (roster)"
+              hint="Tracks Full name above. Switch only to re-link this login to a different existing driver's history."
+            >
               <select value={driverId} onChange={(e) => setDriverId(e.target.value)} className={INPUT}>
                 <option value="">Select…</option>
                 {drivers.map((d) => (

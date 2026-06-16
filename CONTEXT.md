@@ -60,10 +60,14 @@ The word "driver" is overloaded in casual speech. In this system it splits into
 
 ## Admin panel verbs
 
-- **Add a user** — create a Login + Profile (Role, optional Roster link) in one
-  step. A driver gets a **Username** (suggested from their name) and a Roster
-  entry (existing or minted inline); an admin gets an **email**.
-- **Assign a role / re-link a driver** — edit the Profile.
+- **Add a user** — create a Login + Profile in one step. A driver gets a
+  **Username** (suggested from their name) and a **Roster entry minted from
+  their Full name** (one per person — the identity shown on deliveries); an
+  admin gets an **email**. Re-linking a driver to an *existing* Roster entry is
+  a Manage-panel action, not part of Add.
+- **Assign a role / re-link a driver** — edit the Profile. Editing a driver's
+  Full name also renames their linked Roster entry (kept in sync), unless you
+  re-link them to a different existing entry.
 - **Reset password** — set a new password on the Login (admin-chosen; see
   ADR 0002).
 - **Deactivate** — ban the Login so it can't sign in, without deleting history.
