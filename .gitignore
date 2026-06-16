@@ -10,6 +10,12 @@ dev-dist/
 # env — .env.example is the committed template
 .env
 .env.local
+scripts/.env
+
+# python (forwarder tooling)
+__pycache__/
+.pytest_cache/
+*.pyc
 
 # supabase local state
 supabase/.temp/
