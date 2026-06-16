@@ -39,32 +39,50 @@ ePOD driver capture ─→ parcel_events / pod_records   (ePOD Supabase mqiwyfhx
                                           dbo.TrackingLog (+ ImportedIntoGW)
 ```
 
-## Carrier branding (multi-carrier → always DHL)
+## Carrier branding (per-carrier — implemented 2026-06-16)
 
-ePOD parcels span DHL, i2i, Oceanair, DX. Every event is forwarded as
-`CarrierProviderName = 'DHL Parcel UK'` regardless of the parcel's real carrier,
-because **DHL is the only `CarrierProviderName` whose codes CarrierHub
-classifies**. Downstream, GWOptical/Lens relabel the carrier from the parcel's
-service, so an Oceanair parcel still reads Oceanair — the scan stays
-carrier-agnostic. (Identical to the Lens forwarder's choice.)
+ePOD parcels span DHL, i2i, Oceanair, DX (no Menzies). Each event is forwarded
+under its **true** `CarrierProviderName` + that carrier's own CarrierHub code, so
+other GWOptical consumers see the correct carrier.
+
+ePOD has no carrier column, so carrier is **derived from the tracking-number
+prefix** — which mirrors GWOptical's service-based model (migration 069):
+
+| Tracking prefix | `CarrierProviderName` |
+|---|---|
+| `I2IAD…` | `I2I` |
+| `I2IOA…` | `Oceanair` |
+| `7086…`  | `DX` |
+| anything else | `DHL Parcel UK` |
+
+ePOD handles no Menzies parcels, so the fallback is DHL (confirmed). The map and
+codes live in `CARRIER_RULES` / `derive_carrier()` in the forwarder. The canonical
+five-carrier model and full CarrierHub coverage are recorded in Lens ADR 0005
+(`specsavers-report/docs/adr/0005-tracking-events-span-five-carriers.md`).
 
 `ClientReference = 'EPOD'` marks the origin (Lens uses `'LENS'`).
 
-## Event → CarrierCode map
+## Event → CarrierCode map (per carrier)
 
-All four are **real DHL codes already present in live `dbo.TrackingLog`**, so
-CarrierHub maps them with no new config (a confirmation to Audrius is still
-courteous for the two new ones). Env-overridable.
+Codes verified against CarrierHub's code master (2026-06-16). A `—` means no code
+exists for that (carrier, event) yet — the event is **suppressed** (left
+un-forwarded but still eligible) until Audrius supplies one. Oceanair has no codes,
+so all its events are suppressed.
 
-| ePOD event | source | `CarrierCode` | Canonical CarrierHub description |
-|---|---|---|---|
-| `collection` | `parcel_events.stage='collection'` | `CTCL` | Driver Collection Scan |
-| `warehouse`  | `parcel_events.stage='warehouse'`  | `WH10` | In Delivering Warehouse |
-| `delivered`  | `pod_records.status='delivered'`   | `DT15` | Accepted at delivery point |
-| `failed`     | `pod_records.status='failed'`      | `DF48` | 48 - No Contact / Access Avail |
+| ePOD event | source | DHL Parcel UK | I2I | DX | Oceanair |
+|---|---|---|---|---|---|
+| `collection` | `parcel_events.stage='collection'` | `CTCL` | `I2I04` | `VS` | — |
+| `warehouse`  | `parcel_events.stage='warehouse'`  | `WH10` | `I2I03` | `OR` | — |
+| `delivered`  | `pod_records.status='delivered'`   | `DT15` | `I2I05` | `V`/`VL` | — |
+| `failed`     | `pod_records.status='failed'`      | `DF48` | `I2I06` | `D` | — |
 
-`CTCL` / `DT15` are the codes Lens already agreed with Audrius. `WH10` / `DF48`
-are new to this feed — worth a heads-up, non-blocking.
+DX delivered splits `V` (signature captured) / `VL` (left safe — no signature),
+decided from `pod_records.signature_path`. `gw_forward_log.carrier_provider`
+records which carrier each row was sent as.
+
+`CTCL` / `DT15` are the codes Lens already agreed with Audrius; `WH10` / `DF48`
+are new to this feed but verified present in the CarrierHub master (2026-06-16),
+so they classify with no new config.
 
 The `delivered` parcel_event (id = podId, written by the POD sync) is **excluded**
 by the `stage IN ('collection','warehouse')` filter, so delivery is forwarded
@@ -78,7 +96,8 @@ One row per ePOD event handed to GWOptical. PK `(source, source_id)` where
 `source ∈ {event, pod}` and `source_id` is the ePOD client UUID.
 
 ```
-source text, source_id uuid, tracking_number text, carrier_code text,
+source text, source_id uuid, tracking_number text,
+carrier_provider text, carrier_code text,        -- what we sent (per-carrier)
 event_at timestamptz, forwarded_at timestamptz default now(),
 gw_export_id bigint, exported_at timestamptz
 ```
@@ -108,10 +127,10 @@ Lens forwarder …002, so they never collide). `--dry-run` logs without writing.
 
 | Intake column | Source |
 |---|---|
-| `CarrierProviderName` | `'DHL Parcel UK'` (constant) |
+| `CarrierProviderName` | `derive_carrier(tracking_number)` — the parcel's true carrier |
 | `TrackingNumber` | `parcels.tracking_number` (≤50) |
 | `ClientReference` | `'EPOD'` |
-| `CarrierCode` | code map above |
+| `CarrierCode` | `resolve_code(carrier, event, signed)` — per-carrier code map above |
 | `TrackingDate` / `TrackingDateTime` | `captured_at` → Europe/London local, tz-naive |
 | `TrackingLocation` | parcel `postcode` ?? `area` (≤200) |
 | `Latitude` / `Longitude` | captured fix via `ST_Y`/`ST_X(location)` — `decimal(10,7)` |

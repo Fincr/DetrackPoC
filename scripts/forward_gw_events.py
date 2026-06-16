@@ -7,10 +7,10 @@ Lens "Manual Events" forwarder does: it INSERTs into the intake table
 `dbo.TrackingLogExport`, and GWOptical's own 5-minute pull job maps the
 CarrierCode via CarrierHub and lands the event in `dbo.TrackingLog`.
 
-Why an intake table and not a direct TrackingLog write, why everything is
-branded DHL, and the full event journey: see
+Why an intake table and not a direct TrackingLog write, how each carrier is
+branded, and the full event journey: see
 docs/superpowers/specs/2026-06-16-gwoptical-tracking-forwarder-design.md
-and specsavers-report/docs/adr/0002-manual-events-via-gwoptical-intake.md.
+and specsavers-report/docs/adr/0005-tracking-events-span-five-carriers.md.
 
 GWOptical (sqlaggw.citipost.co.uk) sits on a private 10.x network — reachable
 only from the automation host, never from Vercel/Supabase. So this runs here,
@@ -49,20 +49,72 @@ LONDON = ZoneInfo("Europe/London")
 ADVISORY_LOCK_KEY = 7242116003  # loader holds ...001, Lens forwarder ...002 — distinct so they never collide
 DRY = "--dry-run" in sys.argv
 
-# Every event is branded DHL — the only CarrierProviderName whose codes
-# CarrierHub classifies. The parcel's real carrier (DHL/i2i/Oceanair/DX) is
-# relabelled downstream from its service, so the scan stays carrier-agnostic.
-CARRIER_PROVIDER = "DHL Parcel UK"
+# --- Per-carrier branding & codes ---------------------------------------------
+# Each event is forwarded under its TRUE CarrierProviderName + that carrier's own
+# CarrierCode, so other GWOptical consumers see the correct carrier (not a blanket
+# "DHL Parcel UK").
+#
+# ePOD has no carrier column, so carrier is DERIVED from the tracking-number
+# prefix — which mirrors GWOptical's service-based model (Lens migration 069):
+# I2IAD… -> I2I, I2IOA… -> Oceanair, 7086… -> DX, everything else -> DHL. ePOD
+# handles no Menzies parcels, so the "else" bucket is DHL (confirmed 2026-06-16).
+#
+# Codes verified against CarrierHub's code master (Audrius export, 2026-06-16);
+# see Lens ADR 0005. A code of None means no CarrierHub code exists for that
+# (carrier, event) yet -> the event is SKIPPED, NOT recorded as forwarded, so it
+# self-heals the moment Audrius supplies one. Oceanair has no codes at all, so
+# every Oceanair event is skipped.
 CLIENT_REFERENCE = "EPOD"  # origin marker (Lens uses 'LENS')
 
-# ePOD event -> DHL CarrierCode. All four are real codes already live in
-# dbo.TrackingLog, so CarrierHub maps them with no new config. Env-overridable.
-CODES = {
-    "collection": os.environ.get("EPOD_CODE_COLLECTION", "CTCL"),  # Driver Collection Scan
-    "warehouse": os.environ.get("EPOD_CODE_WAREHOUSE", "WH10"),    # In Delivering Warehouse
-    "delivered": os.environ.get("EPOD_CODE_DELIVERED", "DT15"),    # Accepted at delivery point
-    "failed": os.environ.get("EPOD_CODE_FAILED", "DF48"),          # 48 - No Contact / Access Avail
+CARRIER_RULES = {
+    "DHL Parcel UK": {
+        "collection": "CTCL",   # Driver Collection Scan
+        "warehouse":  "WH10",   # In Delivering Warehouse Scan
+        "delivered":  "DT15",   # Accepted at delivery point
+        "failed":     "DF48",   # 48 - No Contact / Access Available
+    },
+    "I2I": {
+        "collection": "I2I04",  # Assigned to driver (= our driver takes custody)
+        "warehouse":  "I2I03",  # Arrived at hub
+        "delivered":  "I2I05",  # Delivered
+        "failed":     "I2I06",  # Exception
+    },
+    "DX": {
+        "collection": "VS",     # Collected from customer
+        "warehouse":  "OR",     # On the Road
+        "delivered":  "V",      # Signed For (-> VL when left safe; see resolve_code)
+        "failed":     "D",      # No Access
+    },
+    "Oceanair": {},             # no CarrierHub codes — every event suppressed
 }
+
+
+def derive_carrier(tracking_number):
+    """GWOptical tracking number -> carrier (CarrierProviderName).
+
+    Prefixes mirror Lens migration 069's service-based model. ePOD carries no
+    Menzies parcels, so the fallback is DHL Parcel UK.
+    """
+    tn = (tracking_number or "").upper()
+    if tn.startswith("I2IAD"):
+        return "I2I"
+    if tn.startswith("I2IOA"):
+        return "Oceanair"
+    if tn.startswith("7086"):
+        return "DX"
+    return "DHL Parcel UK"
+
+
+def resolve_code(carrier, kind, signed):
+    """CarrierCode for this (carrier, event), or None to suppress.
+
+    DX deliveries split by evidence: a captured signature -> V (Signed For); a
+    leave-safe drop (no signature) -> VL (Package Left in a Suitable Location).
+    """
+    code = CARRIER_RULES.get(carrier, {}).get(kind)
+    if carrier == "DX" and kind == "delivered" and code == "V" and not signed:
+        return "VL"
+    return code
 
 # Discover un-forwarded events. Two arms unioned so they process in time order:
 #   - parcel_events stage IN (collection, warehouse). The 'delivered' parcel_event
@@ -73,14 +125,15 @@ CODES = {
 # captured_at is stored UTC; AT TIME ZONE 'Europe/London' yields the tz-naive
 # UK-local datetime GWOptical expects. Lat/Lng come straight off the captured fix.
 DISCOVER_SQL = """
-SELECT source, source_id, tracking_number, kind, event_local, lat, lng, loc_text, info
+SELECT source, source_id, tracking_number, kind, event_local, lat, lng, loc_text, info, signed
 FROM (
   SELECT 'event' AS source, e.id AS source_id, p.tracking_number,
          e.stage AS kind,
          (e.captured_at AT TIME ZONE 'Europe/London') AS event_local,
          ST_Y(e.location::geometry) AS lat, ST_X(e.location::geometry) AS lng,
          COALESCE(p.postcode, p.area) AS loc_text,
-         NULL::text AS info
+         NULL::text AS info,
+         NULL::boolean AS signed
   FROM parcel_events e
   JOIN parcels p ON p.id = e.parcel_id
   WHERE e.stage IN ('collection', 'warehouse')
@@ -92,7 +145,8 @@ FROM (
          (r.captured_at AT TIME ZONE 'Europe/London') AS event_local,
          ST_Y(r.location::geometry) AS lat, ST_X(r.location::geometry) AS lng,
          COALESCE(p.postcode, p.area) AS loc_text,
-         CASE WHEN r.status = 'delivered' THEN r.received_by ELSE r.failure_reason END AS info
+         CASE WHEN r.status = 'delivered' THEN r.received_by ELSE r.failure_reason END AS info,
+         (r.signature_path IS NOT NULL) AS signed
   FROM pod_records r
   JOIN parcels p ON p.id = r.parcel_id
   WHERE r.status IN ('delivered', 'failed')
@@ -134,9 +188,9 @@ def main() -> None:
     if not gw_conn:
         sys.exit("Set GWOPTICAL_CONN in scripts/.env (the GWOptical ODBC string).")
 
-    unknown = [k for k, v in CODES.items() if not v]
-    if unknown:
-        sys.exit(f"Empty CarrierCode for: {', '.join(unknown)} — check EPOD_CODE_* in scripts/.env.")
+    empties = [f"{c}/{k}" for c, codes in CARRIER_RULES.items() for k, v in codes.items() if not v]
+    if empties:
+        sys.exit(f"Empty CarrierCode in CARRIER_RULES for: {', '.join(empties)}")
 
     pg = psycopg2.connect(epod_url)
     cur = pg.cursor()
@@ -147,7 +201,7 @@ def main() -> None:
         return
 
     gw = None
-    pushed = synced = 0
+    pushed = skipped = synced = 0
     try:
         gw = pyodbc.connect(gw_conn, timeout=15)
         gwc = gw.cursor()
@@ -157,14 +211,19 @@ def main() -> None:
         events = cur.fetchall()
         pg.commit()  # close the read transaction before per-row writes
 
-        for source, source_id, tracking, kind, event_local, lat, lng, loc_text, info in events:
-            code = CODES[kind]
+        for source, source_id, tracking, kind, event_local, lat, lng, loc_text, info, signed in events:
+            carrier = derive_carrier(tracking)
+            code = resolve_code(carrier, kind, bool(signed))
+            if code is None:
+                skipped += 1
+                log(f"skip {source} {source_id} {tracking} ({carrier}/{kind}) - no CarrierHub code")
+                continue
             if DRY:
-                log(f"[dry] would push {source} {source_id} {tracking} {kind} ({code}) @ {event_local}")
+                log(f"[dry] would push {source} {source_id} {tracking} {carrier}/{kind} ({code}) @ {event_local}")
                 continue
             gwc.execute(
                 INSERT_INTAKE_SQL,
-                CARRIER_PROVIDER,
+                carrier,                       # CarrierProviderName = the parcel's true carrier
                 clip(tracking, 50),
                 CLIENT_REFERENCE,
                 clip(code, 100),
@@ -180,15 +239,17 @@ def main() -> None:
             gw.commit()
             cur.execute(
                 """INSERT INTO gw_forward_log
-                     (source, source_id, tracking_number, carrier_code, event_at, gw_export_id)
-                   VALUES (%s, %s, %s, %s, %s, %s)
+                     (source, source_id, tracking_number, carrier_provider, carrier_code, event_at, gw_export_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (source, source_id) DO UPDATE
-                     SET gw_export_id = EXCLUDED.gw_export_id, forwarded_at = now()""",
-                (source, source_id, tracking, code, event_local, gw_id),
+                     SET carrier_provider = EXCLUDED.carrier_provider,
+                         carrier_code = EXCLUDED.carrier_code,
+                         gw_export_id = EXCLUDED.gw_export_id, forwarded_at = now()""",
+                (source, source_id, tracking, carrier, code, event_local, gw_id),
             )
             pg.commit()
             pushed += 1
-            log(f"pushed {source} {source_id} {tracking} {kind} -> TrackingLogExport Id {gw_id}")
+            log(f"pushed {source} {source_id} {tracking} {carrier}/{kind} ({code}) -> TrackingLogExport Id {gw_id}")
 
         # ---- sync: copy GW's Exported flag back into the bookkeeping ----
         cur.execute(
@@ -224,7 +285,7 @@ def main() -> None:
                 synced += 1
                 log(f"sync {source} {source_id}: exported at {exported_local}")
 
-        log(f"done - pushed {pushed}, synced {synced}{' (dry-run)' if DRY else ''}")
+        log(f"done - pushed {pushed}, skipped {skipped}, synced {synced}{' (dry-run)' if DRY else ''}")
     finally:
         # Always release the advisory lock and close cleanly — a leaked lock on a
         # pooler-held session would silently wedge every later tick.
