@@ -11,7 +11,7 @@ tracks the parcel lifecycle, and exports tracking data.
 - **React + TypeScript + Vite**, installable PWA (`vite-plugin-pwa`, service
   worker active in dev too)
 - **Tailwind v3** ("Freight Modern" theme — graphite/ultramarine/amber)
-- **Supabase** — Postgres + PostGIS, **Auth** (email/password), **Storage**
+- **Supabase** — Postgres + PostGIS, **Auth** (username or email + password), **Storage**
   (private evidence bucket), Realtime. Every table has **RLS**.
 - **Dexie** (IndexedDB) offline queue + idempotent sync worker
 - **Barcode:** native `BarcodeDetector` → `@zxing/library` fallback
@@ -22,6 +22,10 @@ tracks the parcel lifecycle, and exports tracking data.
 
 - **Sign-in portal** (Supabase Auth). A `profiles` row maps each account to a
   role (`admin` | `driver`) and, for drivers, a `driver_id`.
+- **Drivers sign in with a username** (first initial + surname, e.g. `FCrawley`,
+  case-insensitive); **admins** with their company **email**. The single
+  sign-in field accepts either. Usernames are stored as a non-routable synthetic
+  email — an implementation detail users never see (see `docs/adr/0003`).
 - **Admin** → dispatcher portal: `#/allocate`, `#/jobs`, `#/sites`,
   `#/dispatch`. **Driver** → their own run only.
 - Enforced **server-side with RLS**: a driver can only read/write parcels,
