@@ -8,10 +8,13 @@ import {
   parseManifestFile,
   type ColumnMapping,
   type ParsedManifest,
+  type ParcelInput,
 } from '../lib/manifest'
 import { supabase } from '../lib/supabase'
 import { buildTrackingCsv, downloadCsv, type TrackingPod, type TrackingScan } from '../lib/trackingExport'
 import { STATUS_LABEL, STATUS_RANK, type Manifest, type ParcelStatus } from '../lib/types'
+import { enrichShipments } from '../lib/enrichApi'
+import { shipmentToParcelInput } from '../lib/enrich'
 
 /** The parcel fields the Jobs view needs (a subset of the full row). */
 interface JobParcel {
@@ -111,8 +114,9 @@ export function JobsScreen() {
       )}
 
       <div className="grid items-start gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
-        <div className="xl:sticky xl:top-[82px]">
+        <div className="xl:sticky xl:top-[82px] flex flex-col gap-6">
           <ImportCard onImported={() => void load()} />
+          <EnrichCard onImported={() => void load()} />
         </div>
 
         <JobsList
@@ -130,6 +134,27 @@ export function JobsScreen() {
 }
 
 /* ---------------------------------------------------------------- Import --- */
+
+/** Create-or-update a job by name and upsert its parcels (onConflict
+ *  tracking_number). Shared by the file importer and the paste-box enricher. */
+async function commitParcels(name: string, sourceFilename: string, parcels: ParcelInput[]): Promise<void> {
+  const { data: existing } = await supabase.from('manifests').select('id').eq('name', name).maybeSingle()
+  let manifestId: string
+  if (existing) {
+    manifestId = (existing as { id: string }).id
+    const { error } = await supabase.from('manifests')
+      .update({ imported_at: new Date().toISOString(), source_filename: sourceFilename }).eq('id', manifestId)
+    if (error) throw new Error(error.message)
+  } else {
+    const { data, error } = await supabase.from('manifests')
+      .insert({ name, source_filename: sourceFilename }).select().single()
+    if (error) throw new Error(error.message)
+    manifestId = (data as Manifest).id
+  }
+  const rows = parcels.map((p) => ({ ...p, manifest_id: manifestId }))
+  const { error } = await supabase.from('parcels').upsert(rows, { onConflict: 'tracking_number' })
+  if (error) throw new Error(error.message)
+}
 
 function ImportCard({ onImported }: { onImported: () => void }) {
   const fileRef = useRef<HTMLInputElement>(null)
@@ -195,35 +220,7 @@ function ImportCard({ onImported }: { onImported: () => void }) {
       // imported_at, parcels stay attached) instead of minting a duplicate
       // job and re-homing the parcels onto it.
       const name = jobName.trim() || filename || 'Untitled job'
-      const { data: existing } = await supabase
-        .from('manifests')
-        .select('id')
-        .eq('name', name)
-        .maybeSingle()
-      let manifestId: string
-      if (existing) {
-        manifestId = (existing as { id: string }).id
-        const { error: upErr } = await supabase
-          .from('manifests')
-          .update({ imported_at: new Date().toISOString(), source_filename: filename })
-          .eq('id', manifestId)
-        if (upErr) throw new Error(upErr.message)
-      } else {
-        const { data: manifest, error: mErr } = await supabase
-          .from('manifests')
-          .insert({ name, source_filename: filename })
-          .select()
-          .single()
-        if (mErr) throw new Error(mErr.message)
-        manifestId = (manifest as Manifest).id
-      }
-
-      const rows = result.parcels.map((p) => ({ ...p, manifest_id: manifestId }))
-      // Upsert on the unique tracking_number → re-importing a manifest updates
-      // rather than duplicating, and leaves route_id/status untouched.
-      const { error: pErr } = await supabase.from('parcels').upsert(rows, { onConflict: 'tracking_number' })
-      if (pErr) throw new Error(pErr.message)
-
+      await commitParcels(name, filename, result.parcels)
       reset()
       onImported()
     } catch (e) {
@@ -416,6 +413,97 @@ function ImportCard({ onImported }: { onImported: () => void }) {
               </button>
             </div>
           </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+/** Paste/scan bare tracking numbers → look up addresses in GWOptical (via the
+ *  enrich-shipments function) → commit the found ones as a job. Not-found
+ *  numbers are listed with Retry (a fresh shipment may not have synced yet). */
+function EnrichCard({ onImported }: { onImported: () => void }) {
+  const [text, setText] = useState('')
+  const [jobName, setJobName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
+  const [found, setFound] = useState<ParcelInput[] | null>(null)
+  const [notFound, setNotFound] = useState<string[]>([])
+
+  const parseList = (s: string) => Array.from(new Set(
+    s.split(/[\s,]+/).map((t) => t.trim()).filter(Boolean),
+  ))
+
+  async function lookup(numbers: string[]) {
+    if (numbers.length === 0) return
+    setBusy(true); setProblem(null)
+    try {
+      const res = await enrichShipments(numbers)
+      setFound(res.found.map(shipmentToParcelInput))
+      setNotFound(res.notFound)
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : String(e))
+    }
+    setBusy(false)
+  }
+
+  async function commit() {
+    if (!found || found.length === 0) return
+    setBusy(true); setProblem(null)
+    try {
+      await commitParcels(jobName.trim() || 'Tracking import', '', found)
+      setText(''); setJobName(''); setFound(null); setNotFound([])
+      onImported()
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : String(e))
+    }
+    setBusy(false)
+  }
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-line bg-white">
+      <div className="border-b border-line bg-paper/60 px-4 py-2.5">
+        <p className="section-label">Enrich from tracking numbers</p>
+      </div>
+      <div className="p-4">
+        {problem && (
+          <div className="mb-3 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">{problem}</div>
+        )}
+        <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[1.4px] text-muted">Job name</label>
+        <input value={jobName} onChange={(e) => setJobName(e.target.value)}
+          className="mb-3 w-full rounded-[11px] border border-line bg-white px-3 py-[11px] text-sm text-ink focus:border-navy-500 focus:outline-none focus:ring-[3px] focus:ring-navy-500/10" />
+        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={6}
+          placeholder="Paste tracking numbers — one per line"
+          className="w-full rounded-[11px] border border-line bg-white px-3 py-2.5 font-mono text-[12.5px] text-ink focus:border-navy-500 focus:outline-none" />
+        <button type="button" disabled={busy || parseList(text).length === 0}
+          onClick={() => void lookup(parseList(text))}
+          className="mt-3 w-full rounded-[11px] bg-navy px-4 py-2.5 font-serif text-[15px] text-white transition hover:bg-navy-600 active:translate-y-px disabled:opacity-40">
+          {busy ? 'Looking up…' : `Look up ${parseList(text).length} addresses`}
+        </button>
+
+        {found && (
+          <>
+            <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px]">
+              <span className="font-semibold text-ok">{found.length} found</span>
+              {notFound.length > 0 && <span className="font-semibold text-fail">{notFound.length} not found</span>}
+            </div>
+            {notFound.length > 0 && (
+              <div className="mt-2 rounded-[11px] border border-gold/40 bg-gold/10 px-3 py-2 text-[12.5px] text-[#9a6a00]">
+                <div className="mb-1 font-semibold">Not in GWOptical yet:</div>
+                <div className="font-mono text-[11.5px] break-words">{notFound.join(', ')}</div>
+                <button type="button" disabled={busy} onClick={() => void lookup(notFound)}
+                  className="mt-2 rounded-[9px] border border-gold/50 bg-white px-2.5 py-1 text-[12px] font-semibold text-[#9a6a00]">
+                  Retry not-found
+                </button>
+              </div>
+            )}
+            {found.length > 0 && (
+              <button type="button" disabled={busy} onClick={() => void commit()}
+                className="mt-3 w-full rounded-[11px] bg-navy px-4 py-2.5 font-serif text-[15px] text-white disabled:opacity-40">
+                Import {found.length} parcels
+              </button>
+            )}
+          </>
         )}
       </div>
     </section>
