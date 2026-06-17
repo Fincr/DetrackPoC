@@ -1,11 +1,12 @@
 // enrich-shipments — admin-gated, server-side reader of Lens's GWOptical mirror.
 //
 // Why: Lens's public.shipments holds the delivery address per tracking number,
-// but it's RLS-locked (no policy, grants revoked) and lives in a SEPARATE
-// Supabase project, so the browser can't read it. This function verifies the
-// caller is an ePOD admin (same gate as functions/admin), then reads only the
-// columns we need from Lens via a dedicated read-only role (LENS_DB_URL). It
-// does NO shaping — the client maps rows via src/lib/enrich.ts.
+// but it's RLS-locked and lives in a SEPARATE Supabase project, so the browser
+// can't read it. This function verifies the caller is an ePOD admin (same gate
+// as functions/admin), then reads via a dedicated read-only role (LENS_DB_URL)
+// from public.epod_shipment_lookup — a Lens-side view (owner-evaluated, so it
+// clears the base table's RLS) exposing only the columns we need, scoped so the
+// role can read nothing else. It does NO shaping — client maps via src/lib/enrich.ts.
 //
 // Auto-injected env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
 // Secret to set:      LENS_DB_URL  (read-only pooler URI for the Lens project).
@@ -64,8 +65,8 @@ Deno.serve(async (req) => {
       select tracking_number, recipient_full_name, recipient_company,
              recipient_address1, recipient_address2, recipient_address3,
              recipient_city, recipient_county, recipient_postcode
-      from public.shipments
-      where tracking_number = any(${submitted}) and is_deleted = false`
+      from public.epod_shipment_lookup
+      where tracking_number = any(${submitted})`
     const foundSet = new Set(rows.map((r: { tracking_number: string }) => r.tracking_number.toUpperCase()))
     const notFound = submitted.filter((t) => !foundSet.has(t.toUpperCase()))
     return json({
