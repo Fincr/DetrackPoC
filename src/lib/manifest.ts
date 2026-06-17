@@ -1,3 +1,6 @@
+/** This file is imported by Node.js test scripts (e.g. scripts/test-enrich.mjs)
+ *  under Node 24 type-stripping. AREAS is a runtime (value) import, so the
+ *  explicit .ts extension is required for Node's ESM resolution. */
 import { AREAS, type Area } from './types.ts'
 
 /** Manifest import (job intake). A parcel manifest is a spreadsheet where each
