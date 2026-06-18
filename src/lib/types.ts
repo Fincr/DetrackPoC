@@ -65,14 +65,6 @@ export const STAGE_LABEL: Record<Stage, string> = {
   delivered: 'Delivery',
 }
 
-/** The stage a parcel is expecting next — drives the warn-but-allow check
- *  when the scanned stage doesn't match. */
-export function expectedStage(status: ParcelStatus): Stage {
-  if (status === 'awaiting_collection') return 'collection'
-  if (status === 'collected') return 'warehouse'
-  return 'delivered'
-}
-
 /** Terminal = off the active run (delivered, or returned to sender). */
 export function isTerminal(status: ParcelStatus): boolean {
   return status === 'delivered' || status === 'returned'

@@ -6,7 +6,6 @@ import { useSyncStatus } from '../hooks/useSyncStatus'
 import { queueEvent } from '../lib/events'
 import { syncNow } from '../lib/syncWorker'
 import {
-  expectedStage,
   isRollover,
   isTerminal,
   MAX_DELIVERY_ATTEMPTS,
@@ -108,12 +107,15 @@ export function StopsScreen({
     fix: Fix | null,
   ): Promise<string | null> {
     const current = effectiveStatus(parcel)
-    let warning: string | null = null
-    if (STATUS_RANK[STAGE_STATUS[stage]] <= STATUS_RANK[current]) {
-      warning = `Parcel is already ${STATUS_LABEL[current].toLowerCase()} — scan recorded anyway.`
-    } else if (expectedStage(current) !== stage) {
-      warning = `Skipped ${STAGE_LABEL[expectedStage(current)].toLowerCase()} — recorded anyway.`
-    }
+    // Stages are chosen explicitly now, and both Collect→Deliver and
+    // Collect→Warehouse→Deliver are valid runs — so skipping a stage isn't a
+    // mistake to flag. The only heads-up worth giving is a scan that doesn't
+    // move the parcel forward (a duplicate or out-of-order stage): it's still
+    // recorded (events are the audit trail) but it didn't advance the stop.
+    const warning =
+      STATUS_RANK[STAGE_STATUS[stage]] <= STATUS_RANK[current]
+        ? `Parcel is already ${STATUS_LABEL[current].toLowerCase()} — scan recorded anyway.`
+        : null
     await queueEvent({
       parcel,
       trackingScanned: scannedValue,
@@ -288,7 +290,6 @@ export function StopsScreen({
       {sheetOpen && parcels && (
         <ScanSheet
           parcels={parcels}
-          statusOf={effectiveStatus}
           onClose={() => setSheetOpen(false)}
           onMatch={(parcel, value) => {
             setSheetOpen(false)
@@ -313,38 +314,35 @@ interface SessionScan {
   recorded: boolean
 }
 
-type ScanMode = 'auto' | Stage
-const SCAN_MODES: { key: ScanMode; label: string }[] = [
-  { key: 'auto', label: 'Auto' },
+/** The driver must pick one of these before a scan does anything — there is no
+ *  default and no auto-advance, so a parcel can only ever move to a stage the
+ *  driver deliberately chose. That's the whole point: it stops a stray scan
+ *  from advancing the wrong parcel. */
+const SCAN_STAGES: { key: Stage; label: string }[] = [
   { key: 'collection', label: 'Collect' },
   { key: 'warehouse', label: 'Warehouse' },
   { key: 'delivered', label: 'Deliver' },
 ]
 
-/** Scan sheet (§5): the camera scanner is the primary path — a decoded
- *  barcode auto-selects the matching parcel. AUTO (the default) is the whole
- *  lifecycle in one gesture: the system knows each parcel's position, so the
- *  first scan marks it collected, the next marks it at the warehouse, and
- *  the final one opens the delivery capture. The explicit stage buttons stay
- *  as an override for corrections (e.g. re-recording a skipped stage).
- *  Quick scans stamp time + fresh GPS and keep the sheet open
- *  (batch-friendly); type-in stays as the manual fallback, and unknown
- *  values surface clearly. */
+/** Scan sheet (§5): the driver first picks a stage — Collect, Warehouse or
+ *  Deliver — then scans. There is NO auto/default stage: a parcel only moves
+ *  to the stage the driver chose, which keeps a mis-aimed scan from advancing
+ *  the wrong parcel. Collect/Warehouse are quick scans (stamp time + fresh
+ *  GPS, sheet stays open for batch scanning); Deliver opens the full capture.
+ *  Type-in is the manual fallback; unknown values surface clearly. */
 function ScanSheet({
   parcels,
-  statusOf,
   onClose,
   onMatch,
   onStageScan,
 }: {
   parcels: Parcel[]
-  /** Lifecycle position incl. queued (unsynced) scans — drives Auto mode. */
-  statusOf: (p: Parcel) => ParcelStatus
   onClose: () => void
   onMatch: (parcel: Parcel, scannedValue: string) => void
   onStageScan: (parcel: Parcel, scannedValue: string, stage: Stage, fix: Fix | null) => Promise<string | null>
 }) {
-  const [mode, setMode] = useState<ScanMode>('auto')
+  // null = no stage chosen yet; scanning stays inert until the driver picks one.
+  const [mode, setMode] = useState<Stage | null>(null)
   const [value, setValue] = useState('')
   const [unknown, setUnknown] = useState<string | null>(null)
   const [scans, setScans] = useState<SessionScan[]>([])
@@ -352,12 +350,12 @@ function ScanSheet({
   // same real-or-nothing model as the capture screen.
   const { fix, noFixReason, acquiring, getFix, retry } = useGeolocation()
   // The scanner re-fires the same frame several times a second — throttle
-  // repeated values so one label doesn't log/flag repeatedly. In Auto this
-  // also stops a single aim advancing TWO stages back-to-back.
+  // repeated values so one aim doesn't log/flag the same label repeatedly.
   const lastUnknownRef = useRef({ v: '', t: 0 })
   const lastScanRef = useRef({ v: '', t: 0 })
 
   async function tryMatch(raw: string, source: 'scan' | 'type') {
+    if (mode === null) return // a stage must be chosen first — scanning is inert until then
     const needle = raw.trim().toUpperCase()
     if (!needle) return
     const parcel = parcels.find((p) => p.tracking_number.toUpperCase() === needle)
@@ -371,41 +369,14 @@ function ScanSheet({
       return
     }
 
-    // Debounce repeat frames of the same label (and same-aim double-advance
-    // in Auto) before anything is recorded or opened.
+    // Debounce repeat frames of the same label before anything is recorded
+    // or opened.
     const now = Date.now()
     if (lastScanRef.current.v === needle && now - lastScanRef.current.t < 4000) return
     lastScanRef.current = { v: needle, t: now }
 
-    // What does this scan MEAN? Auto = the parcel's next lifecycle step.
-    let stage: Stage
-    if (mode === 'auto') {
-      const current = statusOf(parcel)
-      if (isTerminal(current)) {
-        // Nothing left to advance — say so instead of silently re-recording
-        navigator.vibrate?.(80)
-        setUnknown(null)
-        setValue('')
-        setScans((prev) =>
-          [
-            {
-              ref: parcel.tracking_number,
-              name: parcel.recipient_name,
-              stage: 'delivered' as Stage,
-              at: new Date(),
-              fix: null,
-              warning: `Already ${STATUS_LABEL[current].toLowerCase()} — nothing recorded. Pick a stage above to force a re-scan.`,
-              recorded: false,
-            },
-            ...prev,
-          ].slice(0, 8),
-        )
-        return
-      }
-      stage = expectedStage(current)
-    } else {
-      stage = mode
-    }
+    // The stage is whatever the driver chose above — explicit, never inferred.
+    const stage: Stage = mode
 
     if (stage === 'delivered') {
       navigator.vibrate?.(80) // tactile "got it" on supporting devices
@@ -434,15 +405,15 @@ function ScanSheet({
         className="flex-1 overflow-y-auto rounded-t-[22px] bg-paper p-[18px] pb-[max(24px,env(safe-area-inset-bottom))] sm:max-h-[88vh] sm:w-full sm:max-w-md sm:flex-none sm:rounded-[22px] sm:p-6 sm:shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* What does this scan MEAN — Auto follows the lifecycle; the stage
-            buttons override it for corrections */}
-        <div className="mb-3 grid grid-cols-4 gap-1 rounded-[12px] border border-line bg-white p-1">
-          {SCAN_MODES.map((m) => (
+        {/* Pick the stage first — there is no default, so a scan can only ever
+            move a parcel to the stage the driver explicitly chose here. */}
+        <div className="mb-3 grid grid-cols-3 gap-1 rounded-[12px] border border-line bg-white p-1">
+          {SCAN_STAGES.map((m) => (
             <button
               key={m.key}
               type="button"
               onClick={() => setMode(m.key)}
-              className={`rounded-[9px] px-1 py-2 text-[12px] font-semibold transition ${
+              className={`rounded-[9px] px-1 py-2.5 text-[13px] font-semibold transition ${
                 mode === m.key ? 'bg-navy text-white' : 'text-muted hover:text-ink'
               }`}
             >
@@ -450,51 +421,60 @@ function ScanSheet({
             </button>
           ))}
         </div>
-        <p className="mb-2 text-[11.5px] leading-snug text-muted">
-          {mode === 'auto'
-            ? 'One scan per step: first scan marks the parcel collected, the next at the warehouse, the final one opens the delivery capture.'
-            : mode === 'delivered'
-              ? 'Scanning opens the full delivery capture (photo, signature, outcome).'
-              : `Quick scan — each label is stamped ${mode === 'collection' ? 'collected' : 'at warehouse'} with time + GPS. Keep scanning, the sheet stays open.`}
-        </p>
-
-        <BarcodeScanner onDecode={(v) => void tryMatch(v, 'scan')} />
-
-        {/* GPS state — real-or-nothing, never silent. Shown in every mode:
-            quick scans record this fix directly; Deliver hands over to the
-            capture screen, which takes its own fresh read at the shutter. */}
-        <div className="mt-2 rounded-[11px] border border-line bg-white px-3 py-1.5">
-          <div className="flex min-h-[30px] items-center justify-between gap-3">
-            {acquiring ? (
-              <span className="flex items-center gap-2 text-[12px] font-medium text-muted">
-                <span className="h-3.5 w-3.5 flex-none animate-spin rounded-full border-2 border-navy/20 border-t-navy" />
-                Acquiring GPS…
-              </span>
-            ) : fix ? (
-              <span className="font-mono text-[12px] font-semibold tracking-[0.02em] text-ok">
-                {fix.lat.toFixed(5)}, {fix.lng.toFixed(5)}
-                {fix.accuracyM != null ? ` ±${fix.accuracyM}m` : ''}
-              </span>
-            ) : (
-              <>
-                <span className="text-[12px] font-semibold text-fail">
-                  {mode === 'delivered'
-                    ? 'No GPS fix — the delivery will record no location.'
-                    : 'No GPS fix — scans will record no location.'}
-                </span>
-                <button type="button" onClick={retry} className="flex-none text-[12px] font-bold text-navy-500 underline">
-                  Retry
-                </button>
-              </>
-            )}
+        {mode === null ? (
+          // No stage chosen → the camera and type-in stay gated. Forcing the
+          // choice up front is the whole mistake-prevention mechanism.
+          <div className="rounded-[12px] border border-dashed border-navy-500/40 bg-navy-500/5 px-4 py-5 text-center text-[13px] font-medium leading-snug text-navy-500">
+            Choose <span className="font-bold">Collect</span>, <span className="font-bold">Warehouse</span> or{' '}
+            <span className="font-bold">Deliver</span> above to start scanning.
           </div>
-          {/* WHY there's no fix — a blocked permission must never be silent */}
-          {!acquiring && !fix && noFixReason && (
-            <p className="mt-1 border-t border-line pt-1.5 text-[11.5px] leading-snug text-muted">
-              {NO_FIX_NOTES[noFixReason]}
+        ) : (
+          <>
+            <p className="mb-2 text-[11.5px] leading-snug text-muted">
+              {mode === 'delivered'
+                ? 'Scanning opens the full delivery capture (photo, signature, outcome).'
+                : `Quick scan — each label is stamped ${mode === 'collection' ? 'collected' : 'at warehouse'} with time + GPS. Keep scanning, the sheet stays open.`}
             </p>
-          )}
-        </div>
+
+            <BarcodeScanner onDecode={(v) => void tryMatch(v, 'scan')} />
+
+            {/* GPS state — real-or-nothing, never silent: quick scans record
+                this fix directly; Deliver hands over to the capture screen,
+                which takes its own fresh read at the shutter. */}
+            <div className="mt-2 rounded-[11px] border border-line bg-white px-3 py-1.5">
+              <div className="flex min-h-[30px] items-center justify-between gap-3">
+                {acquiring ? (
+                  <span className="flex items-center gap-2 text-[12px] font-medium text-muted">
+                    <span className="h-3.5 w-3.5 flex-none animate-spin rounded-full border-2 border-navy/20 border-t-navy" />
+                    Acquiring GPS…
+                  </span>
+                ) : fix ? (
+                  <span className="font-mono text-[12px] font-semibold tracking-[0.02em] text-ok">
+                    {fix.lat.toFixed(5)}, {fix.lng.toFixed(5)}
+                    {fix.accuracyM != null ? ` ±${fix.accuracyM}m` : ''}
+                  </span>
+                ) : (
+                  <>
+                    <span className="text-[12px] font-semibold text-fail">
+                      {mode === 'delivered'
+                        ? 'No GPS fix — the delivery will record no location.'
+                        : 'No GPS fix — scans will record no location.'}
+                    </span>
+                    <button type="button" onClick={retry} className="flex-none text-[12px] font-bold text-navy-500 underline">
+                      Retry
+                    </button>
+                  </>
+                )}
+              </div>
+              {/* WHY there's no fix — a blocked permission must never be silent */}
+              {!acquiring && !fix && noFixReason && (
+                <p className="mt-1 border-t border-line pt-1.5 text-[11.5px] leading-snug text-muted">
+                  {NO_FIX_NOTES[noFixReason]}
+                </p>
+              )}
+            </div>
+          </>
+        )}
 
         {unknown && (
           <div className="mt-2.5 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">
@@ -534,17 +514,21 @@ function ScanSheet({
           </div>
         )}
 
-        <p className="section-label mb-2 mt-4">Or type the tracking number</p>
-        <input
-          value={value}
-          onChange={(e) => {
-            setValue(e.target.value)
-            setUnknown(null)
-          }}
-          onKeyDown={(e) => e.key === 'Enter' && void tryMatch(value, 'type')}
-          placeholder="Tracking number"
-          className="w-full rounded-[11px] border border-line bg-white px-3 py-[11px] font-mono text-sm uppercase tracking-[1px] text-ink focus:border-navy-500 focus:outline-none focus:ring-[3px] focus:ring-navy-500/10"
-        />
+        {mode !== null && (
+          <>
+            <p className="section-label mb-2 mt-4">Or type the tracking number</p>
+            <input
+              value={value}
+              onChange={(e) => {
+                setValue(e.target.value)
+                setUnknown(null)
+              }}
+              onKeyDown={(e) => e.key === 'Enter' && void tryMatch(value, 'type')}
+              placeholder="Tracking number"
+              className="w-full rounded-[11px] border border-line bg-white px-3 py-[11px] font-mono text-sm uppercase tracking-[1px] text-ink focus:border-navy-500 focus:outline-none focus:ring-[3px] focus:ring-navy-500/10"
+            />
+          </>
+        )}
         <div className="mt-3 flex gap-2">
           <button
             type="button"
@@ -553,13 +537,15 @@ function ScanSheet({
           >
             {mode === 'delivered' ? 'Cancel' : 'Done'}
           </button>
-          <button
-            type="button"
-            onClick={() => void tryMatch(value, 'type')}
-            className="flex-1 rounded-[11px] bg-navy p-[11px] font-serif text-[15px] text-white"
-          >
-            {mode === 'auto' ? 'Scan parcel' : mode === 'delivered' ? 'Find parcel' : 'Record scan'}
-          </button>
+          {mode !== null && (
+            <button
+              type="button"
+              onClick={() => void tryMatch(value, 'type')}
+              className="flex-1 rounded-[11px] bg-navy p-[11px] font-serif text-[15px] text-white"
+            >
+              {mode === 'delivered' ? 'Find parcel' : 'Record scan'}
+            </button>
+          )}
         </div>
       </div>
     </div>
