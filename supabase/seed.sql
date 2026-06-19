@@ -6,14 +6,14 @@
 -- Jobs → "Import a manifest" flow; drivers/routes are provisioned per the shape
 -- below, then a driver's profile is pointed at their driver id.
 --
--- Add a real fleet (driver id is free text; routes.areas drives auto-allocation
--- by parcel area — one of 'South London', 'North London', 'West London',
--- 'Central London', 'Kent', 'Surrey'):
+-- Add a real fleet (driver id is free text; routes.delivery_areas /
+-- collection_areas drive auto-allocation by UK postcode-area prefix, e.g. 'SW',
+-- 'SE', 'CR' — an open set of ~120 UK outward prefixes, no fixed enum):
 --
 --   insert into drivers (id, name) values ('drv_acme', 'Driver Name');
 --
---   insert into routes (name, driver_id, areas)
---     values ('London run', 'drv_acme', array['South London']);
+--   insert into routes (name, driver_id, delivery_areas, collection_areas)
+--     values ('South London run', 'drv_acme', array['SW','SE','CR'], array['CR']);
 --
 --   -- map a signed-in driver account to that driver:
 --   update profiles set driver_id = 'drv_acme'

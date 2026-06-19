@@ -26,8 +26,11 @@ create table if not exists routes (
   id         uuid primary key default gen_random_uuid(),
   name       text not null unique,
   driver_id  text references drivers(id),
-  -- Regions this route covers — powers the dispatcher's "auto-allocate by area"
-  areas      text[] not null default '{}',
+  -- Postcode-areas this route COLLECTS from and DELIVERS to (UK outward prefixes).
+  -- Auto-allocate matches a parcel when its collection_area ∈ collection_areas
+  -- AND its delivery_area ∈ delivery_areas.
+  collection_areas text[] not null default '{}',
+  delivery_areas   text[] not null default '{}',
   created_at timestamptz default now()
 );
 
@@ -54,8 +57,14 @@ create table if not exists parcels (
   address_line    text not null,
   postcode        text,
   destination     geography(point, 4326),    -- where it *should* go (geofence)
-  area            text default 'South London'
-                  check (area in ('South London','North London','West London','Central London','Kent','Surrey','Other')),
+  -- Recipient/delivery area + sender (origin) block, both areas = postcodeArea()
+  -- of the respective postcode (UK outward letter prefix). No CHECK — areas are
+  -- an open set of ~120 UK prefixes, not a fixed enum.
+  delivery_area       text,
+  sender_name         text,   -- friendly shop name, baked at import (Sender_Company → collection_points → null)
+  sender_address_line text,
+  sender_postcode     text,
+  collection_area     text,
   status          text default 'awaiting_collection'
                   check (status in ('awaiting_collection','collected','at_warehouse','delivered','returned')),
   -- The run this parcel belongs to. Not terminal AND due_date < today =
@@ -87,6 +96,16 @@ create table if not exists sites (
   created_at   timestamptz default now()
 );
 create index if not exists sites_route_idx on sites(route_id);
+
+-- ── collection points ────────────────────────────────────────────────────────
+-- Display-only shop names/pins keyed on the full sender postcode. Used to show
+-- a friendly collection-point name on parcels imported with a sender postcode.
+create table if not exists collection_points (
+  postcode   text primary key,
+  name       text,
+  pin        geography(point, 4326),
+  created_at timestamptz default now()
+);
 
 -- ── proof of delivery ────────────────────────────────────────────────────────
 create table if not exists pod_records (
@@ -214,7 +233,8 @@ alter table parcels       enable row level security;
 alter table pod_records   enable row level security;
 alter table pod_photos    enable row level security;
 alter table sites         enable row level security;
-alter table parcel_events enable row level security;
+alter table parcel_events      enable row level security;
+alter table collection_points  enable row level security;
 
 drop policy if exists profiles_select on profiles;
 create policy profiles_select on profiles for select using (id = auth.uid() or public.is_admin());
@@ -286,6 +306,13 @@ drop policy if exists parcel_events_update on parcel_events;
 create policy parcel_events_update on parcel_events for update
   using (public.is_admin() or driver_id = public.auth_driver_id())
   with check (public.is_admin() or driver_id = public.auth_driver_id());
+
+drop policy if exists collection_points_select on collection_points;
+create policy collection_points_select on collection_points
+  for select using (auth.uid() is not null);
+drop policy if exists collection_points_admin_write on collection_points;
+create policy collection_points_admin_write on collection_points
+  for all using (public.is_admin()) with check (public.is_admin());
 
 -- ── storage: private evidence bucket ─────────────────────────────────────────
 insert into storage.buckets (id, name, public)
