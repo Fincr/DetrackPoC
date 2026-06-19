@@ -44,17 +44,46 @@ The word "driver" is overloaded in casual speech. In this system it splits into
 
 ## Fleet & work
 
-- **Route** — one Driver's run for a day (the `routes` row). Has a unique name,
-  an assigned Roster entry (`driver_id`), and a set of **Areas** it covers.
-  Assigning a parcel to a Route implicitly assigns it to that Roster entry.
+- **Route** — one Driver's run for a day (the `routes` row), defined as a set of
+  **Collection areas** → a set of **Delivery areas** (each usually just one). The
+  driver collects every parcel whose **origin** falls in one of the route's
+  collection areas, then delivers those *same* parcels into one of its delivery
+  areas — same parcels, same day; cross-region is normal (e.g. collect `DY`,
+  deliver `EH`+`G`+`ML`). A parcel auto-allocates to a Route when its collection
+  area ∈ the route's collection set **and** its delivery area ∈ its delivery set
+  (the dispatcher keeps a day's sets non-overlapping, so a parcel lands on
+  exactly one). Has a unique name and an assigned Roster entry (`driver_id`).
 
-- **Area** — a fixed delivery-area label: exactly `South London`,
-  `North London`, `West London`, `Central London`, `Kent`, `Surrey`. Flat
-  labels, not nested (`Central London` is not "inside" any other). A parcel
-  carries one (`parcels.area`, DB CHECK-constrained, default `South London`); a
-  Route covers a set (`routes.areas`). A Route's Areas drive the dispatcher's
-  "auto-allocate by area", which matches a parcel's area against the labels a
-  Route lists.
+- **Area** — the canonical region grain: a **UK postcode area** — the leading
+  letters of a postcode (`EH`, `DY`, `NN`, `SW`…; ~120 nationwide), derived
+  directly from the postcode (a simpler `deriveArea`). A parcel carries **two**:
+  a **Collection area** (from its sender) and a **Delivery area** (from its
+  recipient); a Route pairs one of each and auto-allocation matches both.
+  *(Supersedes the original six London-only labels — `South London`, `Kent`, … —
+  which this replaces with the UK-wide postcode-area scheme.)*
+
+- **Origin (sender)** — where a parcel is collected *from*. Each parcel carries
+  a sender address (company/name, address lines, `sender_postcode`), taken from
+  the GWOptical shipment record at import/enrich time — the pickup-leg
+  counterpart of the recipient/delivery address. Always present in the source.
+
+- **Collection point** — a distinct origin that parcels are picked up from,
+  identified by its **sender postcode + address** and **derived** from the
+  parcels themselves (their sender fields), *not* a separately maintained list.
+  It is the pickup-leg analogue of a delivery destination; Collection points group
+  into a driver's pickup leg by **Collection area**, mirroring how **Delivery
+  area** groups deliveries. A Collection point is an *origin* and is **not** a
+  **Site** — a Site is a store/depot you deliver *to*.
+
+- **Collection area** — a region a Route collects in (a Route holds one or
+  more), derived from each parcel's **sender** postcode. Contains many
+  **Collection points** (the distinct sender sites that fall within it).
+
+- **Delivery area** — a region a Route delivers in (a Route holds one or more),
+  derived from each parcel's **recipient** postcode; this is what **Area**
+  becomes once generalised UK-wide. A parcel therefore has *two* areas — a
+  collection area (from its sender) and a delivery area (from its recipient) —
+  and a Route holds a set of each.
 
 - **Allocation** — linking a Parcel (or Site) to a Route (`route_id`). `null` =
   unallocated (dispatcher to-do; hidden from every driver's run).
