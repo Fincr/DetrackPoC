@@ -6,9 +6,14 @@
 --   $env:SUPABASE_SERVICE_ROLE_KEY = "<service role key from Settings → API>"
 --   node scripts/seed-auth.mjs
 --
--- This is the complete, current schema + demo seed (mirrors supabase/migrations
--- + seed.sql as of 2026-06-11: region areas, parcel lifecycle, sites, atomic
--- status RPCs, RLS everywhere, private evidence bucket). Safe to re-run.
+-- This is the complete, current hosted schema + demo seed, and the SOURCE OF TRUTH
+-- for the hosted DB (applied live via MCP execute_sql, NOT CLI migrations). Note:
+-- supabase/migrations/ is not maintained for hosted changes after 2026-06-11, so a
+-- local `db reset` lags the hosted schema (local dev is vestigial; we run hosted).
+-- Current as of 2026-06-19 — collect-and-deliver: UK postcode-area model, parcel
+-- sender/origin block, two-dimensional routes, collection_points; plus parcel
+-- lifecycle, sites, atomic status RPCs, RLS everywhere, private evidence bucket.
+-- Safe to re-run.
 
 create extension if not exists postgis;
 

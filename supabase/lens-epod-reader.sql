@@ -4,7 +4,8 @@
 -- project (ref `eivbxinppkwhqtglusmh`), NOT to ePOD. It lives in this repo only
 -- as the version-controlled source of truth for the cross-project read path, so
 -- the security scoping below is visible, auditable, and survives view edits.
--- Applied 2026-06-17. If you change the view, change it HERE and re-apply.
+-- Applied 2026-06-19 (sender block added; the recipient-only version was 2026-06-17).
+-- If you change the view, change it HERE and re-apply.
 --
 -- Security boundary (why this is shaped the way it is):
 --   * `epod_reader` is a dedicated LOGIN role with NO superuser / createdb /
