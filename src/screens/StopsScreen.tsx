@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { BarcodeScanner } from '../components/BarcodeScanner'
 import { TopBar } from '../components/TopBar'
 import { NO_FIX_NOTES, useGeolocation } from '../hooks/useGeolocation'
@@ -101,12 +101,26 @@ export function StopsScreen({
   const completed = parcels?.filter((p) => isDone(p) && completedToday(p)) ?? []
   const rollovers = active.filter((p) => isRollover(p)).length
 
-  // Step 1: Phase state — default to Deliver if everything active is already collected
+  // Step 1: Phase state — default to Deliver if everything active is already collected.
+  // The initial value uses allCollected but parcels may still be loading at mount
+  // (active = []), so the default is 'collect' until the effect below corrects it.
   const allCollected = active.length > 0 && active.every((p) => STATUS_RANK[effectiveStatus(p)] >= STATUS_RANK['collected'])
   const [phase, setPhase] = useState<'collect' | 'deliver'>(allCollected ? 'deliver' : 'collect')
 
-  // Step 2: Group active parcels by collection point (sender_postcode as key)
-  const collectGroups = useMemo(() => {
+  // One-shot effect: once parcel data arrives, snap the phase to the right side
+  // (e.g. a driver resuming a part-collected run). After it fires once it never
+  // overrides the driver's manual phase switches.
+  const phaseInitialised = useRef(false)
+  useEffect(() => {
+    if (phaseInitialised.current || active.length === 0) return
+    phaseInitialised.current = true
+    setPhase(allCollected ? 'deliver' : 'collect')
+  }, [active, allCollected])
+
+  // Step 2: Group active parcels by collection point (sender_postcode as key).
+  // active is recomputed inline each render (new array ref), so useMemo would
+  // re-run every render anyway — a plain const is honest and simpler.
+  const collectGroups = (() => {
     const m = new Map<string, { name: string; postcode: string | null; parcels: Parcel[] }>()
     for (const p of active) {
       const key = p.sender_postcode ?? '∅'
@@ -114,7 +128,7 @@ export function StopsScreen({
       g.parcels.push(p); m.set(key, g)
     }
     return [...m.values()].sort((a, b) => a.name.localeCompare(b.name))
-  }, [active])
+  })()
 
   /** Record a quick stage scan (collection/warehouse): local queue first, then
    *  a fire-and-forget sync. Returns the warn-but-allow note (skipped or
