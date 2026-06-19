@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { BarcodeScanner } from '../components/BarcodeScanner'
 import { TopBar } from '../components/TopBar'
 import { NO_FIX_NOTES, useGeolocation } from '../hooks/useGeolocation'
@@ -101,6 +101,21 @@ export function StopsScreen({
   const completed = parcels?.filter((p) => isDone(p) && completedToday(p)) ?? []
   const rollovers = active.filter((p) => isRollover(p)).length
 
+  // Step 1: Phase state — default to Deliver if everything active is already collected
+  const allCollected = active.length > 0 && active.every((p) => STATUS_RANK[effectiveStatus(p)] >= STATUS_RANK['collected'])
+  const [phase, setPhase] = useState<'collect' | 'deliver'>(allCollected ? 'deliver' : 'collect')
+
+  // Step 2: Group active parcels by collection point (sender_postcode as key)
+  const collectGroups = useMemo(() => {
+    const m = new Map<string, { name: string; postcode: string | null; parcels: Parcel[] }>()
+    for (const p of active) {
+      const key = p.sender_postcode ?? '∅'
+      const g = m.get(key) ?? { name: p.sender_name || p.sender_address_line || 'Unknown origin', postcode: p.sender_postcode, parcels: [] }
+      g.parcels.push(p); m.set(key, g)
+    }
+    return [...m.values()].sort((a, b) => a.name.localeCompare(b.name))
+  }, [active])
+
   /** Record a quick stage scan (collection/warehouse): local queue first, then
    *  a fire-and-forget sync. Returns the warn-but-allow note (skipped or
    *  duplicate stage) for the scan sheet's session log. */
@@ -165,6 +180,21 @@ export function StopsScreen({
           </button>
         </div>
 
+        {/* Step 3: Collect/Deliver segmented control with live counts */}
+        {(() => {
+          const collectedCount = active.filter((p) => STATUS_RANK[effectiveStatus(p)] >= STATUS_RANK['collected']).length
+          return (
+            <div className="mb-4 grid grid-cols-2 gap-1 rounded-[12px] border border-line bg-white p-1">
+              {(['collect', 'deliver'] as const).map((ph) => (
+                <button key={ph} type="button" onClick={() => setPhase(ph)}
+                  className={`rounded-[9px] px-3 py-2 text-[13px] font-semibold transition ${phase === ph ? 'bg-navy text-white' : 'text-muted hover:text-ink'}`}>
+                  {ph === 'collect' ? `Collect · ${collectedCount}/${active.length}` : 'Deliver'}
+                </button>
+              ))}
+            </div>
+          )
+        })()}
+
         {error && (
           <div className="mb-3 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">
             Couldn't load parcels: {error}. Is the local Supabase stack running?
@@ -179,46 +209,79 @@ export function StopsScreen({
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {active.map((p, i) => {
-            const queuedFailed = queuedParcels.get(p.id) === 'failed'
-            // Attempt counter: server-confirmed attempts, +1 if one is queued
-            const attempts = p.attempts + (queuedFailed ? 1 : 0)
-            const note =
-              attempts > 0
-                ? `Attempt ${Math.min(attempts + 1, MAX_DELIVERY_ATTEMPTS)} of ${MAX_DELIVERY_ATTEMPTS}` +
-                  (queuedFailed ? ' · failed attempt queued' : p.last_failure ? ` · last: ${p.last_failure}` : '')
-                : undefined
-            const status = effectiveStatus(p)
-            const stageQueued = queuedStages.has(p.id) && status !== p.status
-            return (
-              <StopRow
-                key={p.id}
-                parcel={p}
-                onSelect={onSelect}
-                note={note}
-                stagePill={
-                  <span
-                    className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px] ${STAGE_PILL[status]}`}
-                  >
-                    {STATUS_LABEL[status]}
-                    {stageQueued && ' · queued'}
-                  </span>
-                }
-              >
-                {isRollover(p) ? (
-                  <span className="rounded-full border border-gold/50 bg-gold/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px] text-gold">
-                    Rollover · {dueLabel(p.due_date)}
-                  </span>
-                ) : (
-                  <span className="text-[11px] font-bold uppercase tracking-[0.6px] text-muted">
-                    Stop {i + 1}
-                  </span>
-                )}
-              </StopRow>
-            )
-          })}
-        </div>
+        {/* Step 4: Collect phase — grouped cards by sender/collection point */}
+        {phase === 'collect' && (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {collectGroups.map((g) => {
+              const done = g.parcels.filter((p) => STATUS_RANK[effectiveStatus(p)] >= STATUS_RANK['collected']).length
+              return (
+                <article key={g.postcode ?? g.name} className="flex flex-col rounded-2xl border border-line bg-white p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-[15px] font-semibold text-ink">{g.name}</div>
+                      {g.postcode && <div className="font-mono text-[11px] tracking-[0.5px] text-navy-500">{g.postcode}</div>}
+                    </div>
+                    <span className={`flex-none rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px] ${done === g.parcels.length ? 'border-ok/40 bg-ok/10 text-ok' : 'border-gold/50 bg-gold/10 text-gold'}`}>
+                      Collected {done}/{g.parcels.length}
+                    </span>
+                  </div>
+                  <ul className="mt-2 flex flex-col gap-1 text-[12.5px] text-muted">
+                    {g.parcels.map((p) => (
+                      <li key={p.id} className="flex items-center justify-between gap-2">
+                        <span className="truncate">{p.recipient_name} · {p.delivery_area || '?'}</span>
+                        <span className="font-mono text-[11px] text-navy-500">{p.tracking_number}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </article>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Step 5: Deliver phase — existing active-stops grid, scoped to deliver */}
+        {phase === 'deliver' && (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {active.map((p, i) => {
+              const queuedFailed = queuedParcels.get(p.id) === 'failed'
+              // Attempt counter: server-confirmed attempts, +1 if one is queued
+              const attempts = p.attempts + (queuedFailed ? 1 : 0)
+              const note =
+                attempts > 0
+                  ? `Attempt ${Math.min(attempts + 1, MAX_DELIVERY_ATTEMPTS)} of ${MAX_DELIVERY_ATTEMPTS}` +
+                    (queuedFailed ? ' · failed attempt queued' : p.last_failure ? ` · last: ${p.last_failure}` : '')
+                  : undefined
+              const status = effectiveStatus(p)
+              const stageQueued = queuedStages.has(p.id) && status !== p.status
+              return (
+                <StopRow
+                  key={p.id}
+                  parcel={p}
+                  onSelect={onSelect}
+                  note={note}
+                  stagePill={
+                    <span
+                      className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px] ${STAGE_PILL[status]}`}
+                    >
+                      {STATUS_LABEL[status]}
+                      {stageQueued && ' · queued'}
+                    </span>
+                  }
+                >
+                  {isRollover(p) ? (
+                    <span className="rounded-full border border-gold/50 bg-gold/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px] text-gold">
+                      Rollover · {dueLabel(p.due_date)}
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-bold uppercase tracking-[0.6px] text-muted">
+                      Stop {i + 1}
+                    </span>
+                  )}
+                </StopRow>
+              )
+            })}
+          </div>
+        )}
 
         {completed.length > 0 && (
           <>
@@ -305,6 +368,7 @@ export function StopsScreen({
             else onSelect(parcel, value)
           }}
           onStageScan={recordStageScan}
+          initialStage={phase === 'collect' ? 'collection' : 'delivered'}
         />
       )}
     </>
@@ -344,14 +408,18 @@ function ScanSheet({
   onClose,
   onMatch,
   onStageScan,
+  initialStage,
 }: {
   parcels: Parcel[]
   onClose: () => void
   onMatch: (parcel: Parcel, scannedValue: string) => void
   onStageScan: (parcel: Parcel, scannedValue: string, stage: Stage, fix: Fix | null) => Promise<string | null>
+  /** Pre-select the stage based on the active phase; the driver can still override. */
+  initialStage?: Stage
 }) {
-  // null = no stage chosen yet; scanning stays inert until the driver picks one.
-  const [mode, setMode] = useState<Stage | null>(null)
+  // Initialised from the current phase so the driver doesn't have to re-pick;
+  // the stage switcher stays in place so they can still override.
+  const [mode, setMode] = useState<Stage | null>(initialStage ?? null)
   const [value, setValue] = useState('')
   const [unknown, setUnknown] = useState<string | null>(null)
   const [scans, setScans] = useState<SessionScan[]>([])
