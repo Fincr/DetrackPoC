@@ -64,15 +64,17 @@ Deno.serve(async (req) => {
 
   // --- Read Lens (read-only role); return raw matched rows + the misses ---
   // epod_shipment_lookup is the ONLY object epod_reader can read: a view scoped
-  // to the 9 recipient columns AND `where is_deleted = false` (no soft-deleted
-  // PII). That row/column scoping is defined and version-controlled in
-  // supabase/lens-epod-reader.sql — change it there, never by widening this query.
+  // to the recipient + sender columns AND `where is_deleted = false` (no
+  // soft-deleted PII). That row/column scoping is defined and version-controlled
+  // in supabase/lens-epod-reader.sql — change it there, never by widening this query.
   const sql = postgres(lensUrl, { prepare: false, max: 1, idle_timeout: 5 })
   try {
     const rows = await sql`
       select tracking_number, recipient_full_name, recipient_company,
              recipient_address1, recipient_address2, recipient_address3,
-             recipient_city, recipient_county, recipient_postcode
+             recipient_city, recipient_county, recipient_postcode,
+             sender_company, sender_address1, sender_address2, sender_address3,
+             sender_city, sender_county, sender_postcode
       from public.epod_shipment_lookup
       where tracking_number = any(${submitted})`
     const foundSet = new Set(rows.map((r: { tracking_number: string }) => r.tracking_number.toUpperCase()))

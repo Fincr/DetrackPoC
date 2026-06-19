@@ -44,12 +44,12 @@ if (existing) {
 // Upsert the parcels UNALLOCATED at the lifecycle start. On re-run this
 // re-attaches them to the job but leaves status/route as they are (a true
 // reset on cloud needs the service key — RLS has no delete policies).
-const rows = PARCELS.map(([tracking_number, recipient_name, address_line, postcode, area, lng, lat]) => ({
+const rows = PARCELS.map(([tracking_number, recipient_name, address_line, postcode, delivery_area, lng, lat]) => ({
   tracking_number,
   recipient_name,
   address_line,
   postcode,
-  area,
+  delivery_area,
   destination: `SRID=4326;POINT(${lng} ${lat})`,
   manifest_id: manifestId,
   route_id: null,
@@ -62,10 +62,10 @@ if (insErr) {
 
 const { data: check } = await supabase
   .from('parcels')
-  .select('tracking_number,status,route_id,area')
+  .select('tracking_number,status,route_id,delivery_area')
   .like('tracking_number', 'TJOB-%')
   .order('tracking_number')
 console.log(`"${JOB_NAME}" seeded on ${url}:`)
 for (const p of check ?? []) {
-  console.log(`  ${p.tracking_number}  ${p.status.padEnd(20)} ${p.route_id ? 'ALLOCATED' : 'unallocated'}  ${p.area}`)
+  console.log(`  ${p.tracking_number}  ${p.status.padEnd(20)} ${p.route_id ? 'ALLOCATED' : 'unallocated'}  ${p.delivery_area}`)
 }

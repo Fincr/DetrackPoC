@@ -201,7 +201,7 @@ function PodCard({
               <span className="text-muted">
                 {' '}
                 · {pod.parcel.address_line}
-                {pod.parcel.postcode ? `, ${pod.parcel.postcode}` : ''} · {pod.parcel.area}
+                {pod.parcel.postcode ? `, ${pod.parcel.postcode}` : ''} · {pod.parcel.delivery_area}
               </span>
             </div>
           )}

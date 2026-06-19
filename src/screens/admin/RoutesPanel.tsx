@@ -1,12 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { isForeignKeyError } from '../../lib/admin'
 import { supabase } from '../../lib/supabase'
-import { AREAS, type Area, type Driver, type Route } from '../../lib/types'
+import type { Driver, Route } from '../../lib/types'
 import { Banner, BTN_DANGER, BTN_GHOST, BTN_PRIMARY, Card, Field, INPUT, Pill } from './ui'
 
-/** Manage routes (a driver's run) — name, the driver who runs it, and the
- *  regions it covers (which power "auto-allocate by area"). Pure client-side:
- *  admins pass the routes RLS write policy. */
+/** Manage routes (a driver's run) — name, the driver who runs it, and the two
+ *  postcode-area sets it pairs: which areas it collects from and which it
+ *  delivers to (which power "auto-allocate by area" — a parcel matches when its
+ *  collection_area ∈ collection_areas AND its delivery_area ∈ delivery_areas).
+ *  Pure client-side: admins pass the routes RLS write policy. */
 export function RoutesPanel({
   routes,
   drivers,
@@ -18,9 +20,25 @@ export function RoutesPanel({
 }) {
   const [name, setName] = useState('')
   const [driverId, setDriverId] = useState('')
-  const [areas, setAreas] = useState<Area[]>([])
+  const [collectionAreas, setCollectionAreas] = useState<string[]>([])
+  const [deliveryAreas, setDeliveryAreas] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // The postcode-areas actually present in the parcel set, offered as quick
+  // toggles in both pickers (free entry still allowed for areas not yet seen).
+  const [presentColl, setPresentColl] = useState<string[]>([])
+  const [presentDeliv, setPresentDeliv] = useState<string[]>([])
+  useEffect(() => {
+    void supabase.from('parcels').select('collection_area, delivery_area').then(({ data }) => {
+      const coll = new Set<string>(), deliv = new Set<string>()
+      for (const r of (data ?? []) as { collection_area: string | null; delivery_area: string | null }[]) {
+        if (r.collection_area) coll.add(r.collection_area)
+        if (r.delivery_area) deliv.add(r.delivery_area)
+      }
+      setPresentColl([...coll].sort()); setPresentDeliv([...deliv].sort())
+    })
+  }, [])
 
   async function add(e: React.FormEvent) {
     e.preventDefault()
@@ -30,12 +48,13 @@ export function RoutesPanel({
     setError(null)
     const { error } = await supabase
       .from('routes')
-      .insert({ name: trimmed, driver_id: driverId || null, areas })
+      .insert({ name: trimmed, driver_id: driverId || null, collection_areas: collectionAreas, delivery_areas: deliveryAreas })
     if (error) setError(error.message)
     else {
       setName('')
       setDriverId('')
-      setAreas([])
+      setCollectionAreas([])
+      setDeliveryAreas([])
       reload()
     }
     setBusy(false)
@@ -45,7 +64,7 @@ export function RoutesPanel({
     <div className="grid items-start gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
       <Card title="Add a route" sticky>
         <form onSubmit={add} className="grid gap-3 p-4">
-          <Field label="Name" hint="Often the region name, e.g. 'Greater London'.">
+          <Field label="Name" hint="Often the corridor, e.g. 'DY → EH'.">
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Route name" className={INPUT} />
           </Field>
           <Field label="Driver">
@@ -58,9 +77,8 @@ export function RoutesPanel({
               ))}
             </select>
           </Field>
-          <Field label="Covers areas" hint="Used by auto-allocate by area.">
-            <AreaChecks selected={areas} onToggle={(a) => setAreas(toggle(areas, a))} />
-          </Field>
+          <AreaPicker label="Collects from" options={presentColl} selected={collectionAreas} onChange={setCollectionAreas} />
+          <AreaPicker label="Delivers to" options={presentDeliv} selected={deliveryAreas} onChange={setDeliveryAreas} />
           <button type="submit" disabled={busy || !name.trim()} className={`w-full ${BTN_PRIMARY}`}>
             {busy ? 'Adding…' : 'Add route'}
           </button>
@@ -77,7 +95,15 @@ export function RoutesPanel({
         )}
         <div className="flex flex-col gap-2">
           {routes.map((r) => (
-            <RouteRow key={r.id} route={r} drivers={drivers} reload={reload} onError={setError} />
+            <RouteRow
+              key={r.id}
+              route={r}
+              drivers={drivers}
+              presentColl={presentColl}
+              presentDeliv={presentDeliv}
+              reload={reload}
+              onError={setError}
+            />
           ))}
         </div>
       </section>
@@ -88,18 +114,23 @@ export function RoutesPanel({
 function RouteRow({
   route,
   drivers,
+  presentColl,
+  presentDeliv,
   reload,
   onError,
 }: {
   route: Route
   drivers: Driver[]
+  presentColl: string[]
+  presentDeliv: string[]
   reload: () => void
   onError: (m: string | null) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(route.name)
   const [driverId, setDriverId] = useState(route.driver_id ?? '')
-  const [areas, setAreas] = useState<Area[]>(route.areas)
+  const [collectionAreas, setCollectionAreas] = useState<string[]>(route.collection_areas)
+  const [deliveryAreas, setDeliveryAreas] = useState<string[]>(route.delivery_areas)
   const [busy, setBusy] = useState(false)
   const driverName = drivers.find((d) => d.id === route.driver_id)?.name
 
@@ -108,7 +139,7 @@ function RouteRow({
     onError(null)
     const { error } = await supabase
       .from('routes')
-      .update({ name: name.trim(), driver_id: driverId || null, areas })
+      .update({ name: name.trim(), driver_id: driverId || null, collection_areas: collectionAreas, delivery_areas: deliveryAreas })
       .eq('id', route.id)
     if (error) onError(error.message)
     else {
@@ -149,9 +180,8 @@ function RouteRow({
             ))}
           </select>
         </Field>
-        <Field label="Covers areas">
-          <AreaChecks selected={areas} onToggle={(a) => setAreas(toggle(areas, a))} />
-        </Field>
+        <AreaPicker label="Collects from" options={presentColl} selected={collectionAreas} onChange={setCollectionAreas} />
+        <AreaPicker label="Delivers to" options={presentDeliv} selected={deliveryAreas} onChange={setDeliveryAreas} />
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => void save()} disabled={busy || !name.trim()} className={BTN_PRIMARY}>
             {busy ? 'Saving…' : 'Save'}
@@ -162,7 +192,8 @@ function RouteRow({
               setEditing(false)
               setName(route.name)
               setDriverId(route.driver_id ?? '')
-              setAreas(route.areas)
+              setCollectionAreas(route.collection_areas)
+              setDeliveryAreas(route.delivery_areas)
             }}
             className={BTN_GHOST}
           >
@@ -173,6 +204,7 @@ function RouteRow({
     )
   }
 
+  const hasAreas = route.collection_areas.length > 0 || route.delivery_areas.length > 0
   return (
     <article className="flex flex-col gap-2 rounded-2xl border border-line bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0">
@@ -181,12 +213,10 @@ function RouteRow({
           {driverName ? <Pill tone="navy">{driverName}</Pill> : <Pill tone="muted">Unassigned</Pill>}
         </div>
         <div className="mt-1 flex flex-wrap gap-1.5">
-          {route.areas.length ? (
-            route.areas.map((a) => (
-              <span key={a} className="rounded-full bg-paper px-2 py-0.5 text-[11px] text-muted">
-                {a}
-              </span>
-            ))
+          {hasAreas ? (
+            <span className="rounded-full bg-paper px-2 py-0.5 font-mono text-[11px] tracking-[0.5px] text-muted">
+              {route.collection_areas.join('·') || '—'} → {route.delivery_areas.join('·') || '—'}
+            </span>
           ) : (
             <span className="text-[12px] text-muted">No areas — won't auto-allocate</span>
           )}
@@ -204,26 +234,34 @@ function RouteRow({
   )
 }
 
-function AreaChecks({ selected, onToggle }: { selected: Area[]; onToggle: (a: Area) => void }) {
+/** Tag-style picker: the present postcode-areas as toggles, plus free entry
+ *  (upper-cased) for any area not yet seen in the parcel set. */
+function AreaPicker({ label, options, selected, onChange }: {
+  label: string; options: string[]; selected: string[]; onChange: (next: string[]) => void
+}) {
+  const [draft, setDraft] = useState('')
+  const all = [...new Set([...options, ...selected])].sort()
+  const toggle = (a: string) => onChange(selected.includes(a) ? selected.filter((x) => x !== a) : [...selected, a])
+  const add = () => { const a = draft.trim().toUpperCase(); if (a && !selected.includes(a)) onChange([...selected, a]); setDraft('') }
   return (
-    <div className="flex flex-col gap-1.5">
-      {AREAS.map((a) => {
-        const on = selected.includes(a)
-        return (
-          <label
-            key={a}
-            className={`flex cursor-pointer items-center gap-2.5 rounded-[10px] border px-3 py-2 text-[13px] transition ${
-              on ? 'border-navy-500/40 bg-navy-500/5 text-ink' : 'border-line text-muted hover:border-navy-500/20'
-            }`}
-          >
-            <input type="checkbox" checked={on} onChange={() => onToggle(a)} className="accent-navy-500" />
+    <div>
+      <p className="section-label mb-1.5">{label}</p>
+      <div className="flex flex-wrap gap-1.5">
+        {all.map((a) => (
+          <button key={a} type="button" onClick={() => toggle(a)}
+            className={`rounded-full border px-2.5 py-1 text-[12px] font-semibold transition ${
+              selected.includes(a) ? 'border-navy-500/50 bg-navy-500/10 text-ink' : 'border-line text-muted hover:border-navy-500/30'}`}>
             {a}
-          </label>
-        )
-      })}
+          </button>
+        ))}
+      </div>
+      <div className="mt-2 flex gap-2">
+        <input value={draft} onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), add())}
+          placeholder="Add a code (e.g. DY)"
+          className={`${INPUT} flex-1`} />
+        <button type="button" onClick={add} className={BTN_GHOST}>Add</button>
+      </div>
     </div>
   )
 }
-
-const toggle = (list: Area[], a: Area): Area[] =>
-  list.includes(a) ? list.filter((x) => x !== a) : [...list, a]

@@ -21,6 +21,6 @@ const { error: rpc2Err } = await supabase.rpc('apply_failed_attempt', {
 })
 console.log('apply_failed_attempt RPC:', rpc2Err ? `MISSING (${rpc2Err.message})` : 'OK')
 
-const { data: areas } = await supabase.from('parcels').select('area').limit(50)
-const distinct = [...new Set((areas ?? []).map((a) => a.area))]
-console.log('areas in use:', distinct.join(', '))
+const { data: areas } = await supabase.from('parcels').select('delivery_area').limit(50)
+const distinct = [...new Set((areas ?? []).map((a) => a.delivery_area))]
+console.log('delivery areas in use:', distinct.join(', '))

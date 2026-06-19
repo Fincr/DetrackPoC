@@ -108,12 +108,12 @@ export default function App({ profile }: { profile: Profile }) {
   )
 }
 
-/** "Rollover · Domestic" for overdue stops, "Stop 2 of 7 · Domestic" within
- *  the active run, "Revisit · Domestic" when re-opening a completed stop. */
+/** "Rollover · EH" for overdue stops, "Stop 2 of 7 · EH" within the active run,
+ *  "Revisit · EH" when re-opening a completed stop (· the delivery postcode-area). */
 function captureEyebrow(parcel: Parcel, parcels: Parcel[] | null): string {
-  if (isRollover(parcel)) return `Rollover · ${parcel.area}`
+  if (isRollover(parcel)) return `Rollover · ${parcel.delivery_area}`
   const active = parcels?.filter((p) => !isTerminal(p.status)) ?? []
   const idx = active.findIndex((p) => p.id === parcel.id)
-  if (idx === -1) return `Revisit · ${parcel.area}`
-  return `Stop ${idx + 1} of ${active.length} · ${parcel.area}`
+  if (idx === -1) return `Revisit · ${parcel.delivery_area}`
+  return `Stop ${idx + 1} of ${active.length} · ${parcel.delivery_area}`
 }

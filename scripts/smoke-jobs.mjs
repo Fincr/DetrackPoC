@@ -42,7 +42,7 @@ if (manifest) {
     recipient_name: `Smoke Recipient ${i + 1}`,
     address_line: '1 Test Street, Testville',
     postcode: 'AB1 2CD',
-    area: 'Greater London',
+    delivery_area: 'AB',
     manifest_id: manifest.id,
     meta: { 'Weight (kg)': 1.2 + i, source: 'smoke' },
   }))
@@ -79,7 +79,7 @@ if (manifest) {
   const { data: ev, error: evErr } = await supabase
     .from('pod_records')
     .select(
-      'tracking_scanned,status,received_by,failure_reason,captured_at,location, parcel:parcels(tracking_number,area,postcode,manifest_id)',
+      'tracking_scanned,status,received_by,failure_reason,captured_at,location, parcel:parcels(tracking_number,delivery_area,postcode,manifest_id)',
     )
     .order('captured_at', { ascending: true })
   if (evErr) fail('export join query', evErr)

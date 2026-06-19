@@ -22,8 +22,8 @@ const parcels = [
   ['CP-300006-GB', 'Acme Home Goods — J. Mercer', '3 Foundry Lane, Holbeck, Leeds', 'LS11 9XE', point(-1.558, 53.789), 'Fulfilment'],
   ['CP-300007-GB', 'Tillys Toy Shop', '27 St Giles Street, Norwich', 'NR2 1JN', point(1.2923, 52.6288), 'Fulfilment'],
   ['CP-400008-GB', 'NN4 Regional Sort Hub', 'Unit 9, Saddlers Way, Northampton', 'NN4 7HD', point(-0.8932, 52.2151), 'Sortation'],
-].map(([tracking_number, recipient_name, address_line, postcode, destination, area]) => ({
-  tracking_number, recipient_name, address_line, postcode, destination, area,
+].map(([tracking_number, recipient_name, address_line, postcode, destination, delivery_area]) => ({
+  tracking_number, recipient_name, address_line, postcode, destination, delivery_area,
 }))
 
 const { error } = await supabase
@@ -36,14 +36,14 @@ if (error) {
 
 const { data, error: selErr } = await supabase
   .from('parcels')
-  .select('tracking_number, recipient_name, area')
+  .select('tracking_number, recipient_name, delivery_area')
   .order('tracking_number')
 if (selErr) {
   console.error('✗ verify failed:', selErr.message)
   process.exit(1)
 }
 console.log(`✓ ${data.length} parcels in cloud project:`)
-for (const p of data) console.log(`    ${p.tracking_number}  ${p.area.padEnd(13)} ${p.recipient_name}`)
+for (const p of data) console.log(`    ${p.tracking_number}  ${(p.delivery_area ?? '').padEnd(13)} ${p.recipient_name}`)
 
 // Bucket probe: upload + public read, like the local smoke test
 const probe = `setup-probe/${Date.now()}.txt`

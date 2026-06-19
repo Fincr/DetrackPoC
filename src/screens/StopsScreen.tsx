@@ -598,7 +598,7 @@ function StopRow({
         <span className="font-mono text-[11px] tracking-[1px] text-navy-500">{p.tracking_number}</span>
         <span className="flex items-center gap-1.5">
           {stagePill}
-          <span className="text-[10px] font-bold uppercase tracking-[0.6px] text-gold">{p.area}</span>
+          <span className="text-[10px] font-bold uppercase tracking-[0.6px] text-gold">{p.delivery_area}</span>
         </span>
       </div>
     </button>

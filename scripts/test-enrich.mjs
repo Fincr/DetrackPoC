@@ -2,7 +2,8 @@
 // type-stripping imports the real src/lib modules under test.
 //   node scripts/test-enrich.mjs
 import {
-  composeAddressLine, composeRecipient, deriveArea, shipmentToParcelInput,
+  composeAddressLine, composeRecipient, composeSenderAddress, senderName,
+  postcodeArea, shipmentToParcelInput,
 } from '../src/lib/enrich.ts'
 
 let pass = 0, fail = 0
@@ -32,32 +33,32 @@ check('recipient falls back to company',
 check('recipient falls back to placeholder',
   composeRecipient({ ...row, recipient_full_name: '', recipient_company: '' }) === '(no name)')
 
-console.log('deriveArea')
-check('BR → Kent', deriveArea('BR1 1AA') === 'Kent')
-check('SE → South London', deriveArea('SE10 9AB') === 'South London')
-check('KT → Surrey', deriveArea('KT1 1AA') === 'Surrey')
-check('WC → Central London', deriveArea('WC2N 5DU') === 'Central London')
-check('lowercase + extra spaces tolerated', deriveArea('  br1 1aa ') === 'Kent')
-check('unknown prefix → Other', deriveArea('ZZ1 1ZZ') === 'Other')
-check('East London (no home) → Other', deriveArea('E1 6AN') === 'Other')
-check('blank → Other', deriveArea('') === 'Other')
-check('null → Other', deriveArea(null) === 'Other')
-// Regression: a 2-letter area must NOT fall back to its 1-letter London
-// namesake. WA=Warrington (not London W), NE=Newcastle (not London N).
-check('WA → Other, not West London', deriveArea('WA1 1AA') === 'Other')
-check('WD → Other, not West London', deriveArea('WD17 1AA') === 'Other')
-check('NE → Other, not North London', deriveArea('NE1 1AA') === 'Other')
-check('NP → Other, not North London', deriveArea('NP10 8XG') === 'Other')
-// …while the genuine 1-letter London areas still resolve.
-check('W → West London', deriveArea('W1A 0AX') === 'West London')
-check('N → North London', deriveArea('N1 9GU') === 'North London')
+console.log('postcodeArea')
+check('SL4 1DE → SL', postcodeArea('SL4 1DE') === 'SL')
+check('DY11 7FL → DY', postcodeArea('DY11 7FL') === 'DY')
+check('B2 4RQ → B', postcodeArea('B2 4RQ') === 'B')
+check('lowercase + spaces tolerated', postcodeArea('  dy11 7fl ') === 'DY')
+check('blank → ""', postcodeArea('') === '')
+check('null → ""', postcodeArea(null) === '')
+check('numeric junk → ""', postcodeArea('1234') === '')
+
+console.log('sender')
+const srow = { ...row,
+  sender_company: '', sender_address1: '5 Mill St', sender_address2: '', sender_address3: '',
+  sender_city: 'Windsor', sender_county: 'Berkshire', sender_postcode: 'SL4 1DE' }
+check('composeSenderAddress joins parts', composeSenderAddress(srow) === '5 Mill St, Windsor, Berkshire')
+check('senderName blank company → null (no map)', senderName(srow) === null)
+check('senderName uses Sender_Company when present',
+  senderName({ ...srow, sender_company: 'Specsavers' }) === 'Specsavers')
+check('senderName falls back to lookup map',
+  senderName(srow, { 'SL4 1DE': 'Specsavers Windsor' }) === 'Specsavers Windsor')
 
 console.log('shipmentToParcelInput')
-const pi = shipmentToParcelInput(row)
-check('maps tracking/recipient/address/postcode/area',
-  pi.tracking_number === 'TRK1' && pi.recipient_name === 'Jane Doe' &&
-  pi.address_line === '1 High St, Unit 4, Bromley, Kent' && pi.postcode === 'BR1 1AA' &&
-  pi.area === 'Kent', JSON.stringify(pi))
+const pi = shipmentToParcelInput(srow, { 'SL4 1DE': 'Specsavers Windsor' })
+check('both areas + sender block + mapped name',
+  pi.delivery_area === 'BR' && pi.collection_area === 'SL' &&
+  pi.sender_postcode === 'SL4 1DE' && pi.sender_address_line === '5 Mill St, Windsor, Berkshire' &&
+  pi.sender_name === 'Specsavers Windsor', JSON.stringify(pi))
 check('raw row kept in meta', pi.meta.recipient_city === 'Bromley')
 
 console.log(`\n${pass} passed, ${fail} failed`)

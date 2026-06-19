@@ -43,14 +43,14 @@ if (signInErr) {
 }
 const { data: parcels, error: pErr } = await driver
   .from('parcels')
-  .select('tracking_number, recipient_name, area, status')
+  .select('tracking_number, recipient_name, delivery_area, status')
   .order('tracking_number')
 if (pErr || !parcels?.length) {
   console.error('✗ driver parcels query failed:', pErr?.message ?? 'no rows')
   failed = true
 } else {
   console.log(`✓ sam sees ${parcels.length} parcels on his run:`)
-  for (const p of parcels) console.log(`    ${p.tracking_number}  ${p.area.padEnd(13)} ${p.recipient_name}`)
+  for (const p of parcels) console.log(`    ${p.tracking_number}  ${(p.delivery_area ?? '').padEnd(13)} ${p.recipient_name}`)
 }
 
 // 3. Evidence bucket: signed-in upload + authenticated read-back (the bucket

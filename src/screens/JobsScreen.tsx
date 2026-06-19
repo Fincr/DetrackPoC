@@ -15,7 +15,7 @@ interface JobParcel {
   recipient_name: string
   address_line: string
   postcode: string | null
-  area: string
+  delivery_area: string
   status: string
   route_id: string | null
   manifest_id: string | null
@@ -38,7 +38,7 @@ export function JobsScreen() {
       supabase.from('manifests').select('*').order('imported_at', { ascending: false }),
       supabase
         .from('parcels')
-        .select('id, tracking_number, recipient_name, address_line, postcode, area, status, route_id, manifest_id')
+        .select('id, tracking_number, recipient_name, address_line, postcode, delivery_area, status, route_id, manifest_id')
         .order('tracking_number'),
     ])
     if (mRes.error) {
@@ -125,7 +125,7 @@ export function JobsScreen() {
   )
 }
 
-/* ---------------------------------------------------------------- Import --- */
+/* ------------------------------------------------------------------ Commit --- */
 
 /** Create-or-update a job by name and upsert its parcels (onConflict
  *  tracking_number). Used by the paste-box enricher. */
@@ -168,7 +168,12 @@ function EnrichCard({ onImported }: { onImported: () => void }) {
     setBusy(true); setProblem(null)
     try {
       const res = await enrichShipments(numbers)
-      const mapped = res.found.map(shipmentToParcelInput)
+      const { data: cps } = await supabase.from('collection_points').select('postcode, name')
+      const names = Object.fromEntries(
+        ((cps ?? []) as { postcode: string; name: string | null }[])
+          .filter((c) => c.name).map((c) => [c.postcode, c.name as string]),
+      )
+      const mapped = res.found.map((r) => shipmentToParcelInput(r, names))
       // merge=true (Retry) only ever receives the not-found set, which is disjoint from already-found — so appending can't duplicate.
       setFound((prev) => (merge && prev ? [...prev, ...mapped] : mapped))
       setNotFound(res.notFound)
@@ -282,13 +287,13 @@ function JobsList({
       supabase
         .from('pod_records')
         .select(
-          'tracking_scanned,status,failure_reason,received_by,captured_at,location, parcel:parcels(tracking_number,area,postcode,manifest_id), site:sites(name,postcode)',
+          'tracking_scanned,status,failure_reason,received_by,captured_at,location, parcel:parcels(tracking_number,delivery_area,postcode,manifest_id), site:sites(name,postcode)',
         )
         .order('captured_at', { ascending: true }),
       supabase
         .from('parcel_events')
         .select(
-          'tracking_scanned,stage,captured_at,location, parcel:parcels(tracking_number,area,postcode,manifest_id)',
+          'tracking_scanned,stage,captured_at,location, parcel:parcels(tracking_number,delivery_area,postcode,manifest_id)',
         )
         .in('stage', ['collection', 'warehouse'])
         .order('captured_at', { ascending: true }),
@@ -299,7 +304,7 @@ function JobsList({
       setExporting(null)
       return
     }
-    type ParcelCtx = { tracking_number: string; area: string | null; postcode: string | null; manifest_id: string | null } | null
+    type ParcelCtx = { tracking_number: string; delivery_area: string | null; postcode: string | null; manifest_id: string | null } | null
     type Row = {
       tracking_scanned: string
       status: TrackingPod['status']
@@ -327,7 +332,7 @@ function JobsList({
         received_by: r.received_by,
         captured_at: r.captured_at,
         location: r.location,
-        area: r.parcel?.area ?? null,
+        area: r.parcel?.delivery_area ?? null,
         postcode: r.parcel?.postcode ?? null,
         siteName: r.site?.name ?? null,
         sitePostcode: r.site?.postcode ?? null,
@@ -340,7 +345,7 @@ function JobsList({
         stage: r.stage,
         captured_at: r.captured_at,
         location: r.location,
-        area: r.parcel?.area ?? null,
+        area: r.parcel?.delivery_area ?? null,
         postcode: r.parcel?.postcode ?? null,
       }))
 
@@ -519,7 +524,7 @@ function JobParcels({
                 <div className="flex items-center gap-2">
                   <span className="truncate text-[13.5px] font-semibold text-ink">{p.recipient_name}</span>
                   <span className="flex-none rounded-full border border-gold/40 bg-gold/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px] text-gold">
-                    {p.area}
+                    {p.delivery_area}
                   </span>
                 </div>
                 <div className="truncate text-[12px] text-muted">

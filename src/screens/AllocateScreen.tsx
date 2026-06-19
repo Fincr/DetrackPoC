@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AdminShell } from '../components/AdminShell'
 import { useFleet } from '../hooks/useFleet'
 import { supabase } from '../lib/supabase'
-import { AREAS } from '../lib/types'
-import type { Area, Parcel } from '../lib/types'
+import { matchRoute, unallocatedReason } from '../lib/allocate'
+import type { Parcel } from '../lib/types'
 
 /** Dispatcher allocation: assign parcels to a route (each route is run by one
  *  driver). Manual per-parcel assignment plus a one-click "auto-allocate by
@@ -43,21 +43,6 @@ export function AllocateScreen() {
     (id: string | null) => fleet?.drivers.find((d) => d.id === id)?.name ?? id ?? '—',
     [fleet],
   )
-  // The route that covers a given area (first match) — drives auto-allocation.
-  const routeForArea = useCallback(
-    (area: Area) => routes.find((r) => r.areas.includes(area)) ?? null,
-    [routes],
-  )
-
-  // Optimistic write — flip area locally, then persist. Realtime/reload
-  // reconciles if the server disagrees.
-  async function assignArea(parcelId: string, area: Area) {
-    setBusy(true)
-    setParcels((prev) => prev?.map((p) => (p.id === parcelId ? { ...p, area } : p)) ?? prev)
-    const { error } = await supabase.from('parcels').update({ area }).eq('id', parcelId)
-    if (error) { setError(error.message); void load() }
-    setBusy(false)
-  }
 
   // Optimistic write — flip route_id locally, then persist. Realtime/reload
   // reconciles if the server disagrees.
@@ -78,7 +63,7 @@ export function AllocateScreen() {
     setError(null)
     const updates = parcels
       .filter((p) => p.route_id == null)
-      .map((p) => ({ id: p.id, routeId: routeForArea(p.area)?.id ?? null }))
+      .map((p) => ({ id: p.id, routeId: matchRoute(p, routes)?.id ?? null }))
       .filter((u): u is { id: string; routeId: string } => u.routeId != null)
     setParcels(
       (prev) =>
@@ -107,7 +92,7 @@ export function AllocateScreen() {
     return map
   }, [routes, parcels])
 
-  const canAuto = unallocated.some((p) => routeForArea(p.area))
+  const canAuto = unallocated.some((p) => matchRoute(p, routes))
 
   return (
     <AdminShell
@@ -149,9 +134,9 @@ export function AllocateScreen() {
                   routes={routes}
                   driverName={driverName}
                   busy={busy}
-                  suggestion={routeForArea(p.area)?.name}
+                  suggestion={matchRoute(p, routes)?.name}
+                  reason={unallocatedReason(p, routes)}
                   onAssign={(routeId) => void assign(p.id, routeId)}
-                  onSetArea={(area) => void assignArea(p.id, area)}
                 />
               ))}
             </div>
@@ -170,7 +155,7 @@ export function AllocateScreen() {
                     <div>
                       <div className="font-serif text-[15px] text-ink">{r.name}</div>
                       <div className="text-[12px] text-muted">
-                        {driverName(r.driver_id)} · {r.areas.join(', ') || 'no areas'}
+                        {driverName(r.driver_id)} · {r.collection_areas.join('·') || '—'} → {r.delivery_areas.join('·') || '—'}
                       </div>
                     </div>
                     <span className="font-mono text-[11px] tracking-[0.5px] text-navy-500">
@@ -190,7 +175,6 @@ export function AllocateScreen() {
                           busy={busy}
                           inset
                           onAssign={(routeId) => void assign(p.id, routeId)}
-                          onSetArea={(area) => void assignArea(p.id, area)}
                         />
                       ))}
                     </div>
@@ -219,8 +203,8 @@ function ParcelRow({
   busy,
   inset = false,
   suggestion,
+  reason,
   onAssign,
-  onSetArea,
 }: {
   parcel: Parcel
   routes: { id: string; name: string; driver_id: string | null }[]
@@ -228,8 +212,8 @@ function ParcelRow({
   busy: boolean
   inset?: boolean
   suggestion?: string
+  reason?: string | null
   onAssign: (routeId: string | null) => void
-  onSetArea: (area: Area) => void
 }) {
   return (
     <div
@@ -240,22 +224,15 @@ function ParcelRow({
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="truncate text-[14px] font-semibold text-ink">{p.recipient_name}</span>
-          <select
-            value={p.area}
-            disabled={busy}
-            onChange={(e) => onSetArea(e.target.value as Area)}
-            aria-label={`Area for ${p.tracking_number}`}
-            className={`flex-none rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px] focus:outline-none ${
-              p.area === 'Other' ? 'border-fail/40 bg-fail/10 text-fail' : 'border-gold/40 bg-gold/10 text-gold'
-            }`}
-          >
-            {AREAS.map((a) => <option key={a} value={a}>{a}</option>)}
-          </select>
+          <span className="flex-none rounded-full border border-gold/40 bg-gold/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.6px] text-gold">
+            {p.collection_area || '?'} → {p.delivery_area || '?'}
+          </span>
         </div>
         <div className="truncate text-[12.5px] text-muted">
           {p.address_line}
           {p.postcode ? `, ${p.postcode}` : ''}
         </div>
+        {reason && <div className="text-[11.5px] font-medium text-muted">{reason}</div>}
         <div className="font-mono text-[11px] tracking-[0.5px] text-navy-500">{p.tracking_number}</div>
       </div>
 

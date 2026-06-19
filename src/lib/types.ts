@@ -1,22 +1,8 @@
 // Row shapes mirroring the §4 schema (hand-written — a PoC doesn't need codegen).
 
-/** Delivery area — the label a route covers and a parcel is tagged with. */
-export type Area =
-  | 'South London'
-  | 'North London'
-  | 'West London'
-  | 'Central London'
-  | 'Kent'
-  | 'Surrey'
-  | 'Other'
-
-/** The fixed set of areas (matches the parcels.area CHECK constraint). The
- *  dispatcher's route-area editor and auto-allocation draw from exactly these.
- *  'Other' is the fallback for parcels whose area couldn't be auto-derived
- *  (e.g. unrecognised manifest value, or enrichment returned no match). */
-export const AREAS: Area[] = [
-  'South London', 'North London', 'West London', 'Central London', 'Kent', 'Surrey', 'Other',
-]
+/** A UK postcode area — the outward letter prefix (`DY`, `EH`, `SL`…), or "" when
+ *  the postcode is missing/unparseable. Replaces the old six-label union. */
+export type Area = string
 
 /** Parcel lifecycle position. Each step forward is a SCAN EVENT (timestamp +
  *  GPS + driver): a quick scan for collection/warehouse, the full POD capture
@@ -95,13 +81,16 @@ export interface Driver {
   name: string
 }
 
-/** A route is one driver's run. Parcels are allocated to a route; `areas` is
- *  the set of parcel areas this route covers, which drives auto-allocation. */
+/** A route is one driver's run. Parcels are allocated to a route; a parcel
+ *  matches when its collection_area ∈ collection_areas AND its delivery_area ∈
+ *  delivery_areas — the two-dimensional pairing that drives auto-allocation. */
 export interface Route {
   id: string
   name: string
   driver_id: string | null
-  areas: Area[]
+  /** Postcode-areas this route collects from / delivers to. */
+  collection_areas: Area[]
+  delivery_areas: Area[]
 }
 
 /** An imported manifest = a "job": a batch of parcels handed to us as a
@@ -136,7 +125,14 @@ export interface Parcel {
   postcode: string | null
   /** PostGIS geography comes back as GeoJSON when selected via PostgREST */
   destination: GeoPoint | string | null
-  area: Area
+  /** postcodeArea(recipient postcode) — the delivery region. */
+  delivery_area: Area
+  /** Origin (sender) block, pulled from GWOptical at enrich time. */
+  sender_name: string | null
+  sender_address_line: string | null
+  sender_postcode: string | null
+  /** postcodeArea(sender postcode) — the collection region. */
+  collection_area: Area
   status: ParcelStatus
   /** The run this parcel belongs to (date). Pending past this = rollover. */
   due_date: string

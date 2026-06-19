@@ -8,7 +8,11 @@ export interface ParcelInput {
   recipient_name: string
   address_line: string
   postcode: string | null
-  area: Area
+  delivery_area: Area
+  sender_name: string | null
+  sender_address_line: string | null
+  sender_postcode: string | null
+  collection_area: Area
   /** Raw source row, stashed verbatim into the jsonb column. */
   meta: Record<string, string | null>
 }

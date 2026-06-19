@@ -92,12 +92,12 @@ if (existing) {
 //    awaiting collection (status + due_date come from the column defaults).
 //    The demo begins on the dispatch side — Allocate (or Auto-allocate by
 //    area) hands them to the drivers, then the lifecycle scans follow.
-const rows = PARCELS.map(([tracking, recipient, address, postcode, area, lng, lat]) => ({
+const rows = PARCELS.map(([tracking, recipient, address, postcode, delivery_area, lng, lat]) => ({
   tracking_number: tracking,
   recipient_name: recipient,
   address_line: address,
   postcode,
-  area,
+  delivery_area,
   destination: `POINT(${lng} ${lat})`,
   manifest_id: manifestId,
   route_id: null,
@@ -106,8 +106,8 @@ const { error: insErr } = await svc.from('parcels').insert(rows)
 if (insErr) throw new Error(insErr.message)
 
 console.log(`\n"${JOB_NAME}" seeded — ${PARCELS.length} parcels, UNALLOCATED, at AWAITING COLLECTION:\n`)
-for (const [tracking, recipient, , , area] of PARCELS) {
-  console.log(`  ${tracking}  ${recipient.padEnd(28)} ${area}`)
+for (const [tracking, recipient, , , delivery_area] of PARCELS) {
+  console.log(`  ${tracking}  ${recipient.padEnd(28)} ${delivery_area}`)
 }
 console.log(
   '\nStart to finish: dispatch -> Allocate (auto or manual) -> driver: Scan label ->' +
