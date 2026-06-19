@@ -1,16 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AdminShell } from '../components/AdminShell'
 import { useFleet } from '../hooks/useFleet'
-import {
-  autoMap,
-  buildParcelInputs,
-  MANIFEST_FIELDS,
-  parseManifestFile,
-  splitRowsForEnrichment,
-  type ColumnMapping,
-  type ParsedManifest,
-  type ParcelInput,
-} from '../lib/manifest'
+import type { ParcelInput } from '../lib/manifest'
 import { supabase } from '../lib/supabase'
 import { buildTrackingCsv, downloadCsv, type TrackingPod, type TrackingScan } from '../lib/trackingExport'
 import { STATUS_LABEL, STATUS_RANK, type Manifest, type ParcelStatus } from '../lib/types'
@@ -30,11 +21,12 @@ interface JobParcel {
   manifest_id: string | null
 }
 
-/** Dispatcher Jobs view: import a parcel manifest (.xlsx) to create a job (a
- *  batch of parcels), then open a job to pick its individual parcels and assign
- *  the selected ones to a driver/route, and export captured tracking data as
- *  the Evri-format CSV. Parcels flow through the existing driver → POD pipeline;
- *  same navy/gold/paper language as the other dispatch views. */
+/** Dispatcher Jobs view: paste tracking numbers into EnrichCard to look up
+ *  addresses from the GWOptical mirror and create a job (a batch of parcels),
+ *  then open a job to pick its individual parcels and assign the selected ones
+ *  to a driver/route, and export captured tracking data as the Evri-format CSV.
+ *  Parcels flow through the existing driver → POD pipeline; same navy/gold/paper
+ *  language as the other dispatch views. */
 export function JobsScreen() {
   const { fleet } = useFleet()
   const [manifests, setManifests] = useState<Manifest[] | null>(null)
@@ -105,7 +97,7 @@ export function JobsScreen() {
   return (
     <AdminShell
       active="jobs"
-      title="Jobs & manifests"
+      title="Jobs"
       meta={manifests ? `${manifests.length} job${manifests.length === 1 ? '' : 's'} · ${parcels.length} parcels` : '…'}
     >
       {error && (
@@ -116,7 +108,6 @@ export function JobsScreen() {
 
       <div className="grid items-start gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
         <div className="xl:sticky xl:top-[82px] flex flex-col gap-6">
-          <ImportCard onImported={() => void load()} />
           <EnrichCard onImported={() => void load()} />
         </div>
 
@@ -137,7 +128,7 @@ export function JobsScreen() {
 /* ---------------------------------------------------------------- Import --- */
 
 /** Create-or-update a job by name and upsert its parcels (onConflict
- *  tracking_number). Shared by the file importer and the paste-box enricher. */
+ *  tracking_number). Used by the paste-box enricher. */
 async function commitParcels(name: string, sourceFilename: string, parcels: ParcelInput[]): Promise<void> {
   const { data: existing } = await supabase.from('manifests').select('id').eq('name', name).maybeSingle()
   let manifestId: string
@@ -155,302 +146,6 @@ async function commitParcels(name: string, sourceFilename: string, parcels: Parc
   const rows = parcels.map((p) => ({ ...p, manifest_id: manifestId }))
   const { error } = await supabase.from('parcels').upsert(rows, { onConflict: 'tracking_number' })
   if (error) throw new Error(error.message)
-}
-
-function ImportCard({ onImported }: { onImported: () => void }) {
-  const fileRef = useRef<HTMLInputElement>(null)
-  const [filename, setFilename] = useState('')
-  const [jobName, setJobName] = useState('')
-  const [parsed, setParsed] = useState<ParsedManifest | null>(null)
-  const [mapping, setMapping] = useState<ColumnMapping>({})
-  const [parsing, setParsing] = useState(false)
-  const [importing, setImporting] = useState(false)
-  const [problem, setProblem] = useState<string | null>(null)
-  const [showMapping, setShowMapping] = useState(false)
-
-  const result = useMemo(
-    () => (parsed ? buildParcelInputs(parsed.rows, mapping) : null),
-    [parsed, mapping],
-  )
-  // "Confident" = every required column got auto-matched. When so, we hide the
-  // mapping step entirely and just confirm; the dropdowns stay as a fallback.
-  const confident = useMemo(
-    () => MANIFEST_FIELDS.filter((f) => f.required).every((f) => mapping[f.key]),
-    [mapping],
-  )
-
-  // Tracking-only: the file has a tracking column but no address column — route
-  // through enrichment (GWOptical lookup) instead of the normal build path.
-  const trackingOnly = !!(parsed && mapping.tracking_number && !mapping.address_line)
-  const enrichCount = useMemo(
-    () => (trackingOnly && parsed ? splitRowsForEnrichment(parsed.rows, mapping).toEnrich.length : 0),
-    [trackingOnly, parsed, mapping],
-  )
-
-  async function onFile(file: File) {
-    setProblem(null)
-    setParsing(true)
-    try {
-      const p = await parseManifestFile(file)
-      if (!p.headers.length) {
-        setProblem('No columns found in the first sheet.')
-        setParsing(false)
-        return
-      }
-      const m = autoMap(p.headers)
-      setParsed(p)
-      setMapping(m)
-      // Show the dropdowns only if a required column wasn't auto-matched.
-      setShowMapping(!MANIFEST_FIELDS.filter((f) => f.required).every((f) => m[f.key]))
-      setFilename(file.name)
-      setJobName(file.name.replace(/\.[^.]+$/, ''))
-    } catch (e) {
-      setProblem(`Couldn't read the file: ${e instanceof Error ? e.message : String(e)}`)
-    }
-    setParsing(false)
-  }
-
-  function reset() {
-    setParsed(null)
-    setMapping({})
-    setShowMapping(false)
-    setFilename('')
-    setJobName('')
-    setProblem(null)
-    if (fileRef.current) fileRef.current.value = ''
-  }
-
-  async function commit() {
-    if (trackingOnly ? enrichCount === 0 : !result || !result.parcels.length) return
-    setImporting(true)
-    setProblem(null)
-    try {
-      // Re-importing under the same job name UPDATES that job (fresh
-      // imported_at, parcels stay attached) instead of minting a duplicate
-      // job and re-homing the parcels onto it.
-      const name = jobName.trim() || filename || 'Untitled job'
-
-      // Tracking-only file: look up addresses in GWOptical, then commit found ones.
-      if (parsed && mapping.tracking_number && !mapping.address_line) {
-        const { toEnrich } = splitRowsForEnrichment(parsed.rows, mapping)
-        const res = await enrichShipments(toEnrich)
-        const enriched = res.found.map(shipmentToParcelInput)
-        if (enriched.length === 0) {
-          setProblem(`None of the ${toEnrich.length} tracking numbers were found in GWOptical yet.`)
-          setImporting(false)
-          return
-        }
-        await commitParcels(name, filename, enriched)
-        reset()
-        onImported()
-        if (res.notFound.length > 0) {
-          setProblem(`Imported ${enriched.length}; ${res.notFound.length} not found in GWOptical yet: ${res.notFound.slice(0, 10).join(', ')}${res.notFound.length > 10 ? '…' : ''}`)
-        }
-        setImporting(false)
-        return
-      }
-
-      await commitParcels(name, filename, result!.parcels)
-      reset()
-      onImported()
-    } catch (e) {
-      setProblem(e instanceof Error ? e.message : String(e))
-    }
-    setImporting(false)
-  }
-
-  return (
-    <section className="overflow-hidden rounded-2xl border border-line bg-white">
-      <div className="border-b border-line bg-paper/60 px-4 py-2.5">
-        <p className="section-label">Import a manifest</p>
-      </div>
-
-      <div className="p-4">
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".xlsx,.xls,.csv"
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0]
-            if (f) void onFile(f)
-          }}
-        />
-
-        {problem && (
-          <div className="mb-3 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">
-            {problem}
-          </div>
-        )}
-
-        {!parsed ? (
-          <button
-            type="button"
-            disabled={parsing}
-            onClick={() => fileRef.current?.click()}
-            className="flex w-full flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-navy-500/50 bg-paper/40 px-4 py-8 text-center transition hover:border-navy-500 active:scale-[0.99]"
-          >
-            <UploadGlyph />
-            <span className="font-serif text-base text-navy">
-              {parsing ? 'Reading…' : 'Choose a manifest (.xlsx)'}
-            </span>
-            <span className="text-[12.5px] text-muted">
-              Each row becomes a parcel — we'll map the columns next
-            </span>
-          </button>
-        ) : (
-          <div>
-            <div className="mb-4">
-              <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[1.4px] text-muted">
-                Job name
-              </label>
-              <input
-                value={jobName}
-                onChange={(e) => setJobName(e.target.value)}
-                className="w-full rounded-[11px] border border-line bg-white px-3 py-[11px] text-sm text-ink focus:border-navy-500 focus:outline-none focus:ring-[3px] focus:ring-navy-500/10"
-              />
-              <p className="mt-1 text-[11.5px] text-muted">
-                from <span className="font-mono">{filename}</span> · {parsed.rows.length} rows
-              </p>
-            </div>
-
-            {confident && !showMapping ? (
-              <div className="flex items-center justify-between gap-3 rounded-[11px] border border-ok/30 bg-ok/5 px-3 py-2.5">
-                <span className="text-[12.5px] text-ink">
-                  <span className="font-semibold text-ok">✓ Columns matched automatically</span>
-                  <span className="text-muted"> — tracking, recipient and address all detected.</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setShowMapping(true)}
-                  className="flex-none text-[12.5px] font-semibold text-navy-500 underline"
-                >
-                  Review
-                </button>
-              </div>
-            ) : (
-              <div>
-                <div className="mb-2 flex items-center justify-between">
-                  <p className="section-label">Map columns</p>
-                  {confident && (
-                    <button
-                      type="button"
-                      onClick={() => setShowMapping(false)}
-                      className="text-[12px] font-semibold text-navy-500 underline"
-                    >
-                      Done
-                    </button>
-                  )}
-                </div>
-                {!confident && (
-                  <p className="mb-2 text-[12px] text-fail">
-                    Couldn't match a required column (marked *) — please pick it below.
-                  </p>
-                )}
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {MANIFEST_FIELDS.map((f) => (
-                    <div key={f.key} className="flex items-center justify-between gap-3 rounded-[11px] border border-line bg-paper/40 px-3 py-2">
-                      <span className="text-[13px] font-semibold text-ink">
-                        {f.label}
-                        {f.required && <span className="text-fail"> *</span>}
-                      </span>
-                      <select
-                        value={mapping[f.key] ?? ''}
-                        onChange={(e) => setMapping((m) => ({ ...m, [f.key]: e.target.value || undefined }))}
-                        className="max-w-[60%] rounded-[9px] border border-line bg-white px-2 py-1.5 text-[12.5px] text-ink focus:border-navy-500 focus:outline-none"
-                      >
-                        <option value="">— none —</option>
-                        {parsed.headers.map((h) => (
-                          <option key={h} value={h}>
-                            {h}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {(result || trackingOnly) && (
-              <>
-                <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px]">
-                  {trackingOnly ? (
-                    <span className="font-semibold text-ok">{enrichCount} tracking numbers to look up</span>
-                  ) : (
-                    <span className="font-semibold text-ok">{result!.parcels.length} parcels ready</span>
-                  )}
-                  {!trackingOnly && result && result.errors.length > 0 && (
-                    <span className="font-semibold text-fail">{result.errors.length} rows skipped</span>
-                  )}
-                </div>
-                {!trackingOnly && result && result.errors.length > 0 && (
-                  <ul className="mt-1.5 space-y-0.5 text-[12px] text-muted">
-                    {result.errors.slice(0, 4).map((e) => (
-                      <li key={e.index}>
-                        Row {e.index + 2}: {e.reason}
-                      </li>
-                    ))}
-                    {result.errors.length > 4 && <li>…and {result.errors.length - 4} more</li>}
-                  </ul>
-                )}
-
-                {!trackingOnly && result && result.parcels.length > 0 && (
-                  <div className="mt-3 overflow-x-auto rounded-[11px] border border-line">
-                    <table className="w-full text-left text-[12.5px]">
-                      <thead className="bg-paper/60 text-[10.5px] uppercase tracking-[0.5px] text-muted">
-                        <tr>
-                          <th className="px-2.5 py-1.5 font-bold">Tracking</th>
-                          <th className="px-2.5 py-1.5 font-bold">Recipient</th>
-                          <th className="px-2.5 py-1.5 font-bold">Address</th>
-                          <th className="px-2.5 py-1.5 font-bold">Postcode</th>
-                          <th className="px-2.5 py-1.5 font-bold">Area</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {result.parcels.slice(0, 6).map((p) => (
-                          <tr key={p.tracking_number} className="border-t border-line">
-                            <td className="px-2.5 py-1.5 font-mono text-[11.5px] text-navy-500">{p.tracking_number}</td>
-                            <td className="px-2.5 py-1.5">{p.recipient_name}</td>
-                            <td className="max-w-[180px] truncate px-2.5 py-1.5 text-muted">{p.address_line}</td>
-                            <td className="px-2.5 py-1.5">{p.postcode ?? '—'}</td>
-                            <td className="px-2.5 py-1.5">{p.area}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {result.parcels.length > 6 && (
-                      <div className="border-t border-line bg-paper/40 px-2.5 py-1.5 text-[11.5px] text-muted">
-                        +{result.parcels.length - 6} more
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
-            )}
-
-            <div className="mt-4 flex gap-2">
-              <button
-                type="button"
-                onClick={reset}
-                className="rounded-[11px] border border-line bg-white px-4 py-2.5 text-[13.5px] font-semibold text-muted"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={importing || (trackingOnly ? enrichCount === 0 : !result || result.parcels.length === 0)}
-                onClick={() => void commit()}
-                className="flex-1 rounded-[11px] bg-navy px-4 py-2.5 font-serif text-[15px] text-white transition hover:bg-navy-600 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {importing ? 'Importing…' : trackingOnly ? `Look up & import ${enrichCount}` : `Import ${result?.parcels.length ?? 0} parcels`}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </section>
-  )
 }
 
 /** Paste/scan bare tracking numbers → look up addresses in GWOptical (via the
@@ -682,7 +377,7 @@ function JobsList({
 
       {manifests && manifests.length === 0 && (
         <div className="rounded-2xl border border-line bg-white px-4 py-8 text-center text-[13px] text-muted">
-          No jobs yet — import a manifest to create one.
+          No jobs yet — look up tracking numbers to create one.
         </div>
       )}
 
@@ -898,11 +593,3 @@ function Chevron({ open }: { open: boolean }) {
   )
 }
 
-function UploadGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" className="h-7 w-7 stroke-navy" fill="none" strokeWidth="1.7" aria-hidden>
-      <path d="M12 16V4m0 0L7 9m5-5 5 5" />
-      <path d="M5 20h14" />
-    </svg>
-  )
-}
