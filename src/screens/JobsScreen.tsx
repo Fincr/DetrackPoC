@@ -102,7 +102,7 @@ export function JobsScreen() {
     >
       {error && (
         <div className="mb-4 rounded-[11px] border border-fail/40 bg-fail/10 px-3 py-2.5 text-[13px] text-fail">
-          {error}. Is the local Supabase stack running (and the manifests migration applied)?
+          {error}. Is the local Supabase stack running and reachable?
         </div>
       )}
 

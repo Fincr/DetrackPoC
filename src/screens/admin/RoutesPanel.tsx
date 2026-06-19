@@ -204,6 +204,8 @@ function RouteRow({
     )
   }
 
+  // Both sides must be set for matchRoute to auto-allocate (collection_areas AND delivery_areas).
+  const fullyConfigured = route.collection_areas.length > 0 && route.delivery_areas.length > 0
   const hasAreas = route.collection_areas.length > 0 || route.delivery_areas.length > 0
   return (
     <article className="flex flex-col gap-2 rounded-2xl border border-line bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -213,12 +215,13 @@ function RouteRow({
           {driverName ? <Pill tone="navy">{driverName}</Pill> : <Pill tone="muted">Unassigned</Pill>}
         </div>
         <div className="mt-1 flex flex-wrap gap-1.5">
-          {hasAreas ? (
+          {hasAreas && (
             <span className="rounded-full bg-paper px-2 py-0.5 font-mono text-[11px] tracking-[0.5px] text-muted">
               {route.collection_areas.join('·') || '—'} → {route.delivery_areas.join('·') || '—'}
             </span>
-          ) : (
-            <span className="text-[12px] text-muted">No areas — won't auto-allocate</span>
+          )}
+          {!fullyConfigured && (
+            <span className="text-[12px] text-muted">Set both sides to auto-allocate</span>
           )}
         </div>
       </div>

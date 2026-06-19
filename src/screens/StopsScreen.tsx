@@ -110,6 +110,8 @@ export function StopsScreen({
   // One-shot effect: once parcel data arrives, snap the phase to the right side
   // (e.g. a driver resuming a part-collected run). After it fires once it never
   // overrides the driver's manual phase switches.
+  // A ref (not state) is used so setting it to true doesn't trigger a re-render
+  // — using state here would re-run this effect and fight any manual phase switch.
   const phaseInitialised = useRef(false)
   useEffect(() => {
     if (phaseInitialised.current || active.length === 0) return
