@@ -131,7 +131,14 @@ FROM (
          e.stage AS kind,
          (e.captured_at AT TIME ZONE 'Europe/London') AS event_local,
          ST_Y(e.location::geometry) AS lat, ST_X(e.location::geometry) AS lng,
-         COALESCE(p.postcode, p.delivery_area) AS loc_text,
+         -- Location label tracks WHERE the scan happened: a collection is at the
+         -- sender's site (sender block), so it forwards the sender postcode/area;
+         -- a warehouse scan is mid-journey, kept on the delivery side. Precise
+         -- coords ride lat/lng above either way.
+         CASE WHEN e.stage = 'collection'
+              THEN COALESCE(p.sender_postcode, p.collection_area)
+              ELSE COALESCE(p.postcode, p.delivery_area)
+         END AS loc_text,
          NULL::text AS info,
          NULL::boolean AS signed
   FROM parcel_events e
